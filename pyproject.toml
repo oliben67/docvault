@@ -3,11 +3,29 @@ requires = ["uv_build >= 0.11.7, <0.12.0"]
 build-backend = "uv_build"
 
 [project]
-name = "docvault"
-version = "0.1.0"
-description = "Git-backed JSON document manager with API, CLI, and LLM metadata inference"
+name = "py-docvault"
+version = "0.1.1"
+description = "Git-backed document store with REST API, CLI, and FastAPI embedding — every write is a commit, every document has full revision history."
+readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
+authors = [
+    { name = "oliben68" },
+]
+keywords = ["docvault", "document-store", "git-backed", "rest-api", "fastapi", "python", "cli", "templates", "json-schema", "llm", "audit-trail", "revision-history"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Framework :: FastAPI",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Database",
+    "Topic :: System :: Archiving",
+]
 dependencies = [
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.29.0",
@@ -27,11 +45,14 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "ruff>=0.4.0",
 ]
-all = ["docvault[llm]"]
+all = ["py-docvault[llm]"]
 
 [project.scripts]
 docvault = "docvault.cli.main:app"
 
+
+[tool.uv.build-backend]
+module-name = "docvault"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -135,3 +156,8 @@ docstring-code-format = false
 # This only has an effect when the `docstring-code-format` setting is
 # enabled.
 docstring-code-line-length = "dynamic"
+
+[dependency-groups]
+dev = [
+    "anthropic>=0.97.0",
+]

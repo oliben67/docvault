@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(uv build *)"
+      "Bash(uv build *)",
+      "Bash(python3 -c \"from typer.testing import CliRunner; import inspect; print\\(inspect.signature\\(CliRunner.__init__\\)\\)\")"
     ]
   }
 }

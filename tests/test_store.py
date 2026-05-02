@@ -356,6 +356,7 @@ async def test_export_preserves_source_extension(store: DocVault, tmp_path):
         assert zf.read("data.csv").decode() == "a,b\n1,2"
 
         import json
+
         assert json.loads(zf.read("config.json"))["port"] == 8080
 
 

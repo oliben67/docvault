@@ -180,7 +180,9 @@ class DocVault:
                 template.validate_slot_content(doc.meta.path, content)
 
             new_summary = inp.summary if inp.summary is not None else doc.meta.summary
-            new_keywords = inp.keywords if inp.keywords is not None else doc.meta.keywords
+            new_keywords = (
+                inp.keywords if inp.keywords is not None else doc.meta.keywords
+            )
             new_summary, new_keywords = await self._maybe_summarize(
                 content, new_summary, new_keywords
             )
