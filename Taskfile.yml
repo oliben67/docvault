@@ -1,0 +1,95 @@
+version: '3'
+
+vars:
+  SRC: src/ tests/
+
+tasks:
+  # ── Formatting ──────────────────────────────────────────────────────────────
+
+  fmt:
+    desc: Format code with ruff
+    cmd: uv run ruff format {{.SRC}}
+
+  fmt:check:
+    desc: Check formatting without modifying files
+    cmd: uv run ruff format --check {{.SRC}}
+
+  # ── Linting ─────────────────────────────────────────────────────────────────
+
+  lint:
+    desc: Lint with ruff (report only)
+    cmd: uv run ruff check {{.SRC}}
+
+  lint:fix:
+    desc: Lint and auto-fix safe violations
+    cmd: uv run ruff check --fix {{.SRC}}
+
+  # ── Testing ─────────────────────────────────────────────────────────────────
+
+  test:
+    desc: Run the test suite
+    cmd: uv run pytest tests/ -q
+
+  test:v:
+    desc: Run the test suite with verbose output
+    cmd: uv run pytest tests/ -v
+
+  # ── Building ────────────────────────────────────────────────────────────────
+
+  build:
+    desc: Build source distribution and wheel
+    cmd: uv build
+
+  # ── Composite ───────────────────────────────────────────────────────────────
+
+  check:
+    desc: Run all checks — fmt:check + lint + test (CI gate)
+    cmds:
+      - task: fmt:check
+      - task: lint
+      - task: test
+
+  fix:
+    desc: Auto-fix everything that can be fixed, then format
+    cmds:
+      - task: lint:fix
+      - task: fmt
+
+  # ── Dev server ──────────────────────────────────────────────────────────────
+
+  dev:
+    desc: Start the API server with auto-reload (requires an initialised vault)
+    cmd: uv run uvicorn docvault.api.app:create_app --factory --reload --host 127.0.0.1 --port 8000
+
+  # ── Examples ────────────────────────────────────────────────────────────────
+
+  example:shim:server:
+    desc: Start the shim-integration example server on port 54321
+    dir: examples/shim-integration
+    cmd: uv run uvicorn main:app --port 54321
+
+  example:shim:demo:
+    desc: Run the shim-integration demo script (server must be up on port 54321)
+    dir: examples/shim-integration
+    cmd: uv run python demo.py
+
+  example:shim:clean:
+    desc: Delete the shim-integration demo vault and deployment output
+    dir: examples/shim-integration
+    cmd: rm -rf .demo-vault template-deployment
+
+  # ── OpenAPI spec ─────────────────────────────────────────────────────────────
+
+  openapi:
+    desc: Dump OpenAPI spec to docs/openapi.json (no running server needed)
+    cmd: >
+      uv run python -c "
+      import json, pathlib;
+      from docvault.api.app import create_app;
+      from docvault.config import VaultConfig;
+      app = create_app(VaultConfig(vault_path='/tmp/_dv_openapi_dump'));
+      out = pathlib.Path('docs/openapi.json');
+      out.parent.mkdir(exist_ok=True);
+      out.write_text(json.dumps(app.openapi(), indent=2));
+      print(f'Written {out}')
+      "

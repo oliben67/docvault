@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+_build/
+
+# uv / pip
+.venv/
+uv.lock
+
+# Tools
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# DocVault runtime artefacts
+*.demo-vault/
+examples/**/template-deployment/
+
+# Claude Code
+.claude/settings.local.json
+
+# Copilot local session logs
+.copilot/
