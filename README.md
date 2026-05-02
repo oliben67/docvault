@@ -1,8 +1,10 @@
 # DocVault
 
-Git-backed JSON document manager with a REST API, CLI, JSON Schema templates, fleet versioning, and optional LLM metadata inference.
+DocVault is a git-backed document store for structured data. Every write is a git commit; every document carries a full, auditable revision history; any document can be retrieved exactly as it was at any point in time.
 
-Every write is a git commit. Every document has full revision history. You can retrieve any document as it looked at any point in time.
+It ships as a standalone REST API, an embeddable FastAPI shim, and a CLI — fitting equally as an independent microservice or as a library embedded inside your existing application.
+
+Documents can be plain JSON or any text-based file. Templates define named folder structures with optional JSON Schema validation per slot. A template can be bootstrapped from a local directory, exported as a zip archive, and deployed to any target path — preserving original file names and extensions. The vault carries a semantic version that can be bumped to create a permanent git-tag snapshot of the entire collection. An optional LLM integration (Claude) auto-generates summaries and keywords from document content.
 
 ---
 
@@ -32,7 +34,7 @@ Every write is a git commit. Every document has full revision history. You can r
 - **Git-backed storage** — every document write (create, update, delete) produces a git commit. Full history with author, timestamp, and message.
 - **Point-in-time retrieval** — fetch any document at any commit SHA, tag, or branch.
 - **JSON Schema templates** — register named schemas; documents are validated and default-filled on creation/update.
-- **Fleet versioning** — bump the vault's semantic version and create a git tag snapshot.
+- **Vault versioning** — bump the vault's semantic version and create a git tag snapshot.
 - **Batch deploy** — create many documents from a single template in one atomic commit.
 - **LLM summarization** — auto-generate `summary` and `keywords` from document content using Claude.
 - **Flexible authentication** — none (dev), static API keys, or passthrough to your own auth system.
@@ -291,8 +293,8 @@ Configuration is resolved in this order (later sources win):
 ```json
 {
   "vault_path": "./vault",
-  "fleet_name": "my-fleet",
-  "fleet_description": "Production document store",
+  "vault_name": "my-vault",
+  "vault_description": "Production document store",
   "auth_mode": "api_key",
   "api_keys": ["sk-aaaa", "sk-bbbb"],
   "default_creator": "system",
@@ -309,7 +311,7 @@ Configuration is resolved in this order (later sources win):
 | Variable | Config field | Notes |
 |----------|-------------|-------|
 | `DOCVAULT_PATH` | `vault_path` | |
-| `DOCVAULT_FLEET_NAME` | `fleet_name` | |
+| `DOCVAULT_VAULT_NAME` | `vault_name` | |
 | `DOCVAULT_AUTH_MODE` | `auth_mode` | `none`, `api_key`, or `passthrough` |
 | `DOCVAULT_API_KEYS` | `api_keys` | Comma-separated list |
 | `DOCVAULT_DEFAULT_CREATOR` | `default_creator` | |
@@ -324,8 +326,8 @@ Configuration is resolved in this order (later sources win):
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `vault_path` | path | `./vault` | Directory where git repo and documents are stored |
-| `fleet_name` | string | `"default"` | Logical name for this vault |
-| `fleet_description` | string | `""` | Human-readable description |
+| `vault_name` | string | `"default"` | Logical name for this vault |
+| `vault_description` | string | `""` | Human-readable description |
 | `auth_mode` | enum | `"none"` | Auth strategy: `none`, `api_key`, `passthrough` |
 | `api_keys` | list[str] | `[]` | Valid keys when `auth_mode = "api_key"` |
 | `default_creator` | string | `"system"` | Fallback creator used by background jobs |
@@ -404,13 +406,13 @@ docvault templates delete <NAME> [--force]
 
 ---
 
-### `docvault fleet`
+### `docvault vault`
 
 ```bash
-docvault fleet info
-docvault fleet versions
-docvault fleet bump [major|minor|patch]     # default: patch
-docvault fleet deploy --template NAME --file specs.json
+docvault vault info
+docvault vault versions
+docvault vault bump [major|minor|patch]     # default: patch
+docvault vault deploy --template NAME --file specs.json
 ```
 
 `specs.json` is a JSON array of `DeployDocSpec` objects:
@@ -514,6 +516,9 @@ uv sync --all-extras
 | `task dev` | Start dev server with auto-reload |
 | `task openapi` | Export OpenAPI spec to `docs/openapi.json` |
 | `task build` | Build wheel |
+| `task example:shim:clean` | Wipe shim-integration demo state |
+| `task example:shim:server` | Start shim-integration server on `:54321` |
+| `task example:shim:demo` | Run shim-integration demo script |
 
 ### Running tests
 
@@ -540,9 +545,11 @@ src/docvault/
 │   └── shim.py          # DocVaultShim (host-app integration)
 └── core/
     ├── document.py      # Document, DocumentMeta, CreateDocInput, UpdateDocInput
-    ├── fleet.py         # FleetMeta, FleetVersion
+    ├── vault_meta.py    # VaultMeta, VaultVersion
     ├── git_backend.py   # GitBackend (asyncio.to_thread wrapper)
     ├── store.py         # DocVault (main async store)
     ├── summarizer.py    # DocumentSummarizer (Anthropic API)
-    └── template.py      # Template, TemplateCreateInput, DeployFleetInput
+    ├── tools/
+    │   └── deploy.py    # deploy_template (zip export → local filesystem)
+    └── template.py      # Template, TemplateCreateInput, DeployVaultInput
 ```

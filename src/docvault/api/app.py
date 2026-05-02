@@ -11,30 +11,58 @@ from ..core.store import DocVault  # re-exported for create_mountable_router cal
 from .shim import DocVaultShim
 
 _DESCRIPTION = """\
-**DocVault** is a git-backed JSON document store with full revision history,
-JSON Schema templates, vault versioning, and optional LLM metadata inference.
+**DocVault** is a git-backed document store for structured data. Every write is
+a git commit; every document has a full, auditable revision history; any
+document can be retrieved exactly as it was at any point in time.
 
-## Key concepts
+It ships as a standalone REST API, an embeddable FastAPI shim, and a CLI —
+so it fits equally well as an independent service or as a library wired inside
+your existing application.
+
+## Core concepts
 
 | Concept | Description |
 |---------|-------------|
-| **Document** | Arbitrary JSON with auto-generated metadata. Every write is a git commit. |
-| **Template** | Named JSON Schema that validates documents on create/update, with field defaults. |
-| **Vault** | Vault-level metadata with a semantic version tag. Bump to snapshot the collection. |
-| **Summarization** | LLM inference that fills in `summary` and `keywords` from document content. |
+| **Document** | Arbitrary JSON (or any text file) stored with auto-generated metadata: `id`, `creator`, `created_at`, `updated_at`, `summary`, `keywords`. Every create, update, and delete produces a git commit. |
+| **Template** | A named folder-structure blueprint made up of named *slots*. Each slot can carry a JSON Schema that validates documents on write. Templates can be bootstrapped from a local directory — any file type is supported. |
+| **Template export / deploy** | A template and all its slot documents can be packaged into a zip archive and extracted to any local path, preserving original file names and extensions. |
+| **Vault versioning** | The vault carries a semantic version (`major.minor.patch`). Bumping the version creates a git tag — a permanent, addressable snapshot of the entire document collection. |
+| **Summarization** | On-demand or automatic LLM inference (Claude) that fills in `summary` and `keywords` from document content. Requires an Anthropic API key. |
+| **Point-in-time retrieval** | Fetch any document at any git ref: commit SHA, tag, or branch name. |
+
+## Deployment models
+
+**Standalone server** — run `docvault serve` and interact over HTTP. All
+endpoints are documented in this Swagger UI.
+
+**Embedded shim** — mount DocVault inside your own FastAPI app with two lines:
+
+```python
+shim = DocVaultShim(VaultConfig(vault_path="./vault"))
+app = FastAPI(lifespan=shim.wrap_lifespan())
+app.include_router(shim.router)
+```
+
+All DocVault routes are namespaced under a configurable prefix (default
+`/api/v1`) and never collide with your own routes.
+
+## Authentication
+
+| Mode | Description |
+|------|-------------|
+| `none` | Open access — for local development. |
+| `api_key` | Static keys checked via `X-API-Key` header. |
+| `passthrough` | Delegate to your host app's own auth dependency. |
 
 ## Interactive testing
 
-Use the **Authorize** button above to set your API key (if `auth_mode = api_key`),
-then expand any endpoint and click **Try it out**.
+Use the **Authorize** button above to set your API key when
+`auth_mode = api_key`, then expand any endpoint and click **Try it out**.
 
 ## Generating the OpenAPI spec
 
 ```bash
-# Requires a running server
-curl http://localhost:8000/openapi.json > docs/openapi.json
-# Or via the Taskfile
-task openapi
+task openapi   # writes docs/openapi.json without a running server
 ```
 """
 
