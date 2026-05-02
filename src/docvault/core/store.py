@@ -166,33 +166,36 @@ class DocVault:
         return Document(meta=DocumentMeta(**meta_data), content=content)
 
     async def update_doc(self, doc_id: str, inp: UpdateDocInput) -> Document:
-        doc = await self.get_doc(doc_id)
         content = inp.content
-
-        if doc.meta.template and doc.meta.path:
-            template = await self.get_template(doc.meta.template)
-            template.validate_slot_content(doc.meta.path, content)
-
-        new_summary = inp.summary if inp.summary is not None else doc.meta.summary
-        new_keywords = inp.keywords if inp.keywords is not None else doc.meta.keywords
-        new_summary, new_keywords = await self._maybe_summarize(
-            content, new_summary, new_keywords
-        )
-
-        meta = doc.meta.model_copy(
-            update={
-                "updated_at": datetime.now(UTC),
-                "summary": new_summary,
-                "keywords": new_keywords,
-                "named_version": inp.named_version
-                if inp.named_version is not None
-                else doc.meta.named_version,
-            }
-        )
         doc_path = self._docs_path / f"{doc_id}.json"
         meta_path = self._meta_path / f"{doc_id}.json"
 
         async with self._lock:
+            # Read inside the lock so a concurrent writer cannot truncate the
+            # file between our read and our own write (race → JSONDecodeError).
+            doc = await self.get_doc(doc_id)
+
+            if doc.meta.template and doc.meta.path:
+                template = await self.get_template(doc.meta.template)
+                template.validate_slot_content(doc.meta.path, content)
+
+            new_summary = inp.summary if inp.summary is not None else doc.meta.summary
+            new_keywords = inp.keywords if inp.keywords is not None else doc.meta.keywords
+            new_summary, new_keywords = await self._maybe_summarize(
+                content, new_summary, new_keywords
+            )
+
+            meta = doc.meta.model_copy(
+                update={
+                    "updated_at": datetime.now(UTC),
+                    "summary": new_summary,
+                    "keywords": new_keywords,
+                    "named_version": inp.named_version
+                    if inp.named_version is not None
+                    else doc.meta.named_version,
+                }
+            )
+
             size = await self._write_json(doc_path, content)
             meta = meta.model_copy(update={"size_bytes": size})
             await self._write_json(meta_path, meta.model_dump(mode="json"))
@@ -266,6 +269,7 @@ class DocVault:
     # ── On-demand summarization ────────────────────────────────────────────
 
     async def summarize_doc(self, doc_id: str, overwrite: bool = False) -> Document:
+        doc = await self.get_doc(doc_id)  # raises DocumentNotFoundError early
         if not self._summarizer:
             from ..exceptions import SummarizationError
 
@@ -273,7 +277,6 @@ class DocVault:
                 "LLM summarization not configured. Set llm_api_key in config or "
                 "DOCVAULT_LLM_API_KEY env var."
             )
-        doc = await self.get_doc(doc_id)
         if doc.meta.summary and not overwrite:
             return doc
 
@@ -456,7 +459,11 @@ class DocVault:
                 if meta.path is None:
                     continue
                 doc = await self.get_doc(meta.id)
-                source_ext = doc.content.get("_source_ext") if isinstance(doc.content, dict) else None
+                source_ext = (
+                    doc.content.get("_source_ext")
+                    if isinstance(doc.content, dict)
+                    else None
+                )
                 if source_ext:
                     entry_name = f"{meta.path}.{source_ext}"
                     entry_bytes = doc.content.get("content", "").encode("utf-8")
