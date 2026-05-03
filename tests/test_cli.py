@@ -341,21 +341,32 @@ def test_templates_list_shows_created(vault, tmp_path):
 # ── templates get ─────────────────────────────────────────────────────────────
 
 
-def test_templates_get_existing(vault, tmp_path):
-    struct_file = tmp_path / "struct.json"
+def _create_template_id(vault, tmp_path, name: str) -> str:
+    """Helper: create a template via --file and return its ID."""
+    struct_file = tmp_path / f"struct-{name}.json"
     struct_file.write_text(
         '{"cfg": {"description": "config", "required": true}}', encoding="utf-8"
     )
-    runner.invoke(
-        app, ["templates", "create", "tpl1", "--file", str(struct_file)] + _cfg(vault)
+    r = runner.invoke(
+        app, ["templates", "create", name, "--file", str(struct_file)] + _cfg(vault)
     )
-    result = runner.invoke(app, ["templates", "get", "tpl1"] + _cfg(vault))
+    assert r.exit_code == 0, r.output
+    # The output line is: "✓ Created template <name>  id=<uuid>"
+    for part in r.output.split():
+        if part.startswith("id="):
+            return part[3:]
+    raise ValueError(f"Could not extract template ID from: {r.output}")
+
+
+def test_templates_get_existing(vault, tmp_path):
+    template_id = _create_template_id(vault, tmp_path, "tpl1")
+    result = runner.invoke(app, ["templates", "get", template_id] + _cfg(vault))
     assert result.exit_code == 0
     assert "tpl1" in result.output
 
 
 def test_templates_get_nonexistent_exits_1(vault):
-    result = runner.invoke(app, ["templates", "get", "no-such"] + _cfg(vault))
+    result = runner.invoke(app, ["templates", "get", "no-such-uuid"] + _cfg(vault))
     assert result.exit_code == 1
 
 
@@ -364,21 +375,30 @@ def test_templates_get_nonexistent_exits_1(vault):
 
 def test_templates_create_minimal(vault):
     result = runner.invoke(app, ["templates", "create", "minimal"] + _cfg(vault))
-    assert result.exit_code == 1  # no --file or --from-folder
+    assert result.exit_code == 1  # no --file or --path
 
 
-def test_templates_create_with_from_folder(vault, tmp_path):
+def test_templates_create_with_path_folder(vault, tmp_path):
     folder = tmp_path / "src"
     folder.mkdir()
     (folder / "config.json").write_text('{"port": 8080}', encoding="utf-8")
     result = runner.invoke(
         app,
-        ["templates", "create", "folder-tpl", "--from-folder", str(folder)]
-        + _cfg(vault),
+        ["templates", "create", "folder-tpl", "--path", str(folder)] + _cfg(vault),
     )
     assert result.exit_code == 0
     assert "folder-tpl" in result.output
-    assert "Ingested 1" in result.output
+
+
+def test_templates_create_with_path_single_file(vault, tmp_path):
+    single = tmp_path / "settings.json"
+    single.write_text('{"debug": true}', encoding="utf-8")
+    result = runner.invoke(
+        app,
+        ["templates", "create", "file-tpl", "--path", str(single)] + _cfg(vault),
+    )
+    assert result.exit_code == 0
+    assert "file-tpl" in result.output
 
 
 def test_templates_create_with_description(vault, tmp_path):
@@ -391,7 +411,7 @@ def test_templates_create_with_description(vault, tmp_path):
             "templates",
             "create",
             "described-tpl",
-            "--from-folder",
+            "--path",
             str(folder),
             "--description",
             "My description",
@@ -404,23 +424,10 @@ def test_templates_create_with_description(vault, tmp_path):
 # ── templates delete ──────────────────────────────────────────────────────────
 
 
-def test_templates_delete_with_force(vault):
-    runner.invoke(
-        app,
-        ["templates", "create", "to-delete", "--from-folder", str(vault.parent)]
-        + _cfg(vault),
-    )
-    # Create with no slots for simplicity using a file
-    import tempfile
-
-    with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
-        json.dump({}, f)
-        tmp = f.name
-    runner.invoke(
-        app, ["templates", "create", "to-delete", "--file", tmp] + _cfg(vault)
-    )
+def test_templates_delete_with_force(vault, tmp_path):
+    template_id = _create_template_id(vault, tmp_path, "to-delete")
     result = runner.invoke(
-        app, ["templates", "delete", "to-delete", "--force"] + _cfg(vault)
+        app, ["templates", "delete", template_id, "--force"] + _cfg(vault)
     )
     assert result.exit_code == 0
     assert "Deleted" in result.output
@@ -428,7 +435,7 @@ def test_templates_delete_with_force(vault):
 
 def test_templates_delete_nonexistent_exits_1(vault):
     result = runner.invoke(
-        app, ["templates", "delete", "no-such", "--force"] + _cfg(vault)
+        app, ["templates", "delete", "no-such-uuid", "--force"] + _cfg(vault)
     )
     assert result.exit_code == 1
 

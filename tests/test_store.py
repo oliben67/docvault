@@ -133,10 +133,12 @@ async def test_template_slot_content_validation(store: DocVault):
 
 
 async def test_template_validate_structure(store: DocVault):
-    await store.create_template(TemplateCreateInput(name="svc", structure=_STRUCTURE))
+    ref = await store.create_template(
+        TemplateCreateInput(name="svc", structure=_STRUCTURE)
+    )
 
     # Initially unsatisfied — both required slots are missing
-    result = await store.validate_template("svc")
+    result = await store.validate_template(ref.id)
     assert not result.valid
     assert "config/app" in result.missing
     assert "config/database" in result.missing
@@ -150,7 +152,7 @@ async def test_template_validate_structure(store: DocVault):
             path="config/app",
         )
     )
-    result = await store.validate_template("svc")
+    result = await store.validate_template(ref.id)
     assert not result.valid
     assert "config/app" not in result.missing
     assert "config/database" in result.missing
@@ -164,14 +166,16 @@ async def test_template_validate_structure(store: DocVault):
             path="config/database",
         )
     )
-    result = await store.validate_template("svc")
+    result = await store.validate_template(ref.id)
     assert result.valid
     assert result.missing == []
     assert "docs/readme" not in result.missing
 
 
 async def test_template_validate_extra_docs(store: DocVault):
-    await store.create_template(TemplateCreateInput(name="svc", structure=_STRUCTURE))
+    ref = await store.create_template(
+        TemplateCreateInput(name="svc", structure=_STRUCTURE)
+    )
 
     await store.create_doc(
         CreateDocInput(
@@ -179,7 +183,7 @@ async def test_template_validate_extra_docs(store: DocVault):
         )
     )
 
-    result = await store.validate_template("svc")
+    result = await store.validate_template(ref.id)
     assert "unknown/slot" in result.extra
 
 
@@ -215,10 +219,10 @@ async def test_update_doc_validates_slot(store: DocVault):
 
 
 async def test_delete_template(store: DocVault):
-    await store.create_template(TemplateCreateInput(name="tmp", structure={}))
-    await store.delete_template("tmp")
+    ref = await store.create_template(TemplateCreateInput(name="tmp", structure={}))
+    await store.delete_template(ref.id)
     with pytest.raises(TemplateNotFoundError):
-        await store.get_template("tmp")
+        await store.get_template(ref.id)
 
 
 # ── Vault ──────────────────────────────────────────────────────────────────────
@@ -231,36 +235,33 @@ async def test_create_template_from_folder(store: DocVault, tmp_path):
     (folder / "config" / "db.json").write_text('{"dsn": "postgres://..."}', "utf-8")
     (folder / "readme.json").write_text('{"text": "Hello"}', "utf-8")
 
-    inp = TemplateCreateInput(name="auto", folder_path=folder)
-    result = await store.create_template(inp, creator="admin")
+    inp = TemplateCreateInput(name="auto", path=folder)
+    ref = await store.create_template(inp, creator="admin")
 
-    assert result.template.name == "auto"
-    assert set(result.template.structure.keys()) == {
-        "config/app",
-        "config/db",
-        "readme",
-    }
-    assert len(result.documents) == 3
-    assert all(d.meta.creator == "admin" for d in result.documents)
-    assert all(d.meta.template == "auto" for d in result.documents)
+    assert ref.name == "auto"
+    tpl = await store.get_template(ref.id)
+    assert set(tpl.structure.keys()) == {"config/app", "config/db", "readme"}
 
-    paths = {d.meta.path for d in result.documents}
+    # Verify ingested docs
+    docs = await store.list_docs(template="auto")
+    assert len(docs) == 3
+    assert all(d.creator == "admin" for d in docs)
+    paths = {d.path for d in docs}
     assert paths == {"config/app", "config/db", "readme"}
 
     # Template should be satisfied immediately after ingestion
-    validation = await store.validate_template("auto")
+    validation = await store.validate_template(ref.id)
     assert validation.valid
 
 
 async def test_template_id_format(store: DocVault):
-    result = await store.create_template(
+    import re
+
+    ref = await store.create_template(
         TemplateCreateInput(name="svc", structure=_STRUCTURE)
     )
-    tpl = result.template
-    parts = tpl.id.split("/")
-    assert parts[0] == "svc"
-    assert parts[1] == "v0.1.0"  # default version, no folder_path
-    assert len(parts[2]) == 64  # full SHA-256 hex string
+    assert re.match(r"^[^:]+:[0-9a-f]{32}:[0-9a-f]{32}$", ref.id)
+    assert ref.id.startswith("svc:")
 
 
 async def test_folder_ingestion_defaults_to_v1(store: DocVault, tmp_path):
@@ -268,26 +269,62 @@ async def test_folder_ingestion_defaults_to_v1(store: DocVault, tmp_path):
     folder.mkdir()
     (folder / "item.json").write_text('{"x": 1}', "utf-8")
 
-    result = await store.create_template(
-        TemplateCreateInput(name="v1tpl", folder_path=folder)
-    )
-    assert result.template.id.startswith("v1tpl/v1.0.0/")
+    ref = await store.create_template(TemplateCreateInput(name="v1tpl", path=folder))
+    tpl = await store.get_template(ref.id)
+    assert tpl.version == 1
 
 
-async def test_template_version_override(store: DocVault, tmp_path):
-    from docvault.core.vault_meta import VaultVersion
-
-    folder = tmp_path / "f"
+async def test_template_version_increments_on_content_change(store: DocVault, tmp_path):
+    folder = tmp_path / "tpl"
     folder.mkdir()
-    (folder / "a.json").write_text('{"a": 1}', "utf-8")
+    (folder / "a.json").write_text('{"v": 1}', "utf-8")
 
-    inp = TemplateCreateInput(
-        name="custom",
-        folder_path=folder,
-        version=VaultVersion(major=2, minor=3, patch=4),
+    ref1 = await store.create_template(
+        TemplateCreateInput(name="versioned", path=folder)
     )
-    result = await store.create_template(inp)
-    assert result.template.id.startswith("custom/v2.3.4/")
+    tpl1 = await store.get_template(ref1.id)
+    assert tpl1.version == 1
+
+    (folder / "a.json").write_text('{"v": 2}', "utf-8")
+    ref2 = await store.create_template(
+        TemplateCreateInput(name="versioned", path=folder)
+    )
+    tpl2 = await store.get_template(ref2.id)
+    assert tpl2.version == 2
+    assert ref2.id != ref1.id
+
+
+async def test_template_version_reverts_on_known_content(store: DocVault, tmp_path):
+    folder = tmp_path / "tpl"
+    folder.mkdir()
+    (folder / "a.json").write_text('{"v": 1}', "utf-8")
+    ref1 = await store.create_template(TemplateCreateInput(name="revert", path=folder))
+
+    (folder / "a.json").write_text('{"v": 2}', "utf-8")
+    ref2 = await store.create_template(TemplateCreateInput(name="revert", path=folder))
+    tpl2 = await store.get_template(ref2.id)
+    assert tpl2.version == 2
+
+    # Revert to original content → version should go back to 1
+    (folder / "a.json").write_text('{"v": 1}', "utf-8")
+    ref3 = await store.create_template(TemplateCreateInput(name="revert", path=folder))
+    tpl3 = await store.get_template(ref3.id)
+    assert tpl3.version == 1
+    assert ref3.id == ref1.id
+
+
+async def test_template_same_content_is_noop(store: DocVault, tmp_path):
+    folder = tmp_path / "tpl"
+    folder.mkdir()
+    (folder / "a.json").write_text('{"v": 1}', "utf-8")
+
+    ref1 = await store.create_template(
+        TemplateCreateInput(name="idempotent", path=folder)
+    )
+    ref2 = await store.create_template(
+        TemplateCreateInput(name="idempotent", path=folder)
+    )
+    assert ref1.id == ref2.id
 
 
 async def test_export_template_zip(store: DocVault, tmp_path):
@@ -295,7 +332,9 @@ async def test_export_template_zip(store: DocVault, tmp_path):
     import json
     import zipfile
 
-    await store.create_template(TemplateCreateInput(name="svc", structure=_STRUCTURE))
+    ref = await store.create_template(
+        TemplateCreateInput(name="svc", structure=_STRUCTURE)
+    )
     await store.create_doc(
         CreateDocInput(
             content={"host": "localhost"},
@@ -313,7 +352,7 @@ async def test_export_template_zip(store: DocVault, tmp_path):
         )
     )
 
-    zip_bytes = await store.export_template_zip("svc")
+    zip_bytes = await store.export_template_zip(ref.id)
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
         names = zf.namelist()
         assert "_template.json" in names
@@ -324,7 +363,7 @@ async def test_export_template_zip(store: DocVault, tmp_path):
 
         meta = json.loads(zf.read("_template.json"))
         assert meta["name"] == "svc"
-        assert meta["id"].startswith("svc/v0.1.0/")
+        assert meta["id"] == ref.id
 
         content = json.loads(zf.read("config/app.json"))
         assert content["host"] == "localhost"
@@ -340,12 +379,12 @@ async def test_export_preserves_source_extension(store: DocVault, tmp_path):
     (folder / "data.csv").write_text("a,b\n1,2", "utf-8")
     (folder / "config.json").write_text('{"port": 8080}', "utf-8")
 
-    result = await store.create_template(
-        TemplateCreateInput(name="mixed", folder_path=folder), creator="test"
+    ref = await store.create_template(
+        TemplateCreateInput(name="mixed", path=folder), creator="test"
     )
-    assert result.template.name == "mixed"
+    assert ref.name == "mixed"
 
-    zip_bytes = await store.export_template_zip("mixed")
+    zip_bytes = await store.export_template_zip(ref.id)
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
         names = zf.namelist()
         assert "readme.txt" in names
@@ -383,7 +422,9 @@ async def test_deploy_vault(store: DocVault):
         ),
         "items/b": DocSlot(required=True),
     }
-    await store.create_template(TemplateCreateInput(name="widget", structure=structure))
+    ref = await store.create_template(
+        TemplateCreateInput(name="widget", structure=structure)
+    )
 
     inp = DeployVaultInput(
         template_name="widget",
@@ -397,5 +438,5 @@ async def test_deploy_vault(store: DocVault):
     assert all(d.meta.template == "widget" for d in docs)
     assert {d.meta.path for d in docs} == {"items/a", "items/b"}
 
-    result = await store.validate_template("widget")
+    result = await store.validate_template(ref.id)
     assert result.valid

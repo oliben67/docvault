@@ -92,29 +92,31 @@ async def test_template_crud(client: AsyncClient):
         json={"name": "svc", "description": "Service docs", "structure": _STRUCTURE},
     )
     assert resp.status_code == 201
-    body = resp.json()
-    assert body["template"]["name"] == "svc"
-    assert "config/app" in body["template"]["structure"]
-    assert body["documents"] == []  # no folder ingestion
+    ref = resp.json()
+    assert ref["name"] == "svc"
+    template_id = ref["id"]
 
     assert any(
         t["name"] == "svc" for t in (await client.get("/api/v1/templates")).json()
     )
 
-    assert (await client.get("/api/v1/templates/svc")).status_code == 200
+    assert (await client.get(f"/api/v1/templates/{template_id}")).status_code == 200
 
-    assert (await client.delete("/api/v1/templates/svc")).status_code == 204
-    assert (await client.get("/api/v1/templates/svc")).status_code == 404
+    assert (await client.delete(f"/api/v1/templates/{template_id}")).status_code == 204
+    assert (await client.get(f"/api/v1/templates/{template_id}")).status_code == 404
 
 
 async def test_template_validate_endpoint(client: AsyncClient):
-    await client.post(
-        "/api/v1/templates",
-        json={"name": "svc", "structure": _STRUCTURE},
-    )
+    ref = (
+        await client.post(
+            "/api/v1/templates",
+            json={"name": "svc", "structure": _STRUCTURE},
+        )
+    ).json()
+    template_id = ref["id"]
 
     # Nothing created yet — required slots are missing
-    result = (await client.get("/api/v1/templates/svc/validate")).json()
+    result = (await client.get(f"/api/v1/templates/{template_id}/validate")).json()
     assert not result["valid"]
     assert "config/app" in result["missing"]
     assert "config/database" in result["missing"]
@@ -139,7 +141,7 @@ async def test_template_validate_endpoint(client: AsyncClient):
         },
     )
 
-    result = (await client.get("/api/v1/templates/svc/validate")).json()
+    result = (await client.get(f"/api/v1/templates/{template_id}/validate")).json()
     assert result["valid"]
     assert result["missing"] == []
 
@@ -184,9 +186,12 @@ async def test_template_slot_content_validation_enforced(client: AsyncClient):
 
 
 async def test_template_unknown_path_allowed_appears_as_extra(client: AsyncClient):
-    await client.post(
-        "/api/v1/templates", json={"name": "svc", "structure": _STRUCTURE}
-    )
+    ref = (
+        await client.post(
+            "/api/v1/templates", json={"name": "svc", "structure": _STRUCTURE}
+        )
+    ).json()
+    template_id = ref["id"]
 
     # A path not in the template structure is allowed — it surfaces as 'extra'
     resp = await client.post(
@@ -201,7 +206,7 @@ async def test_template_unknown_path_allowed_appears_as_extra(client: AsyncClien
     assert resp.status_code == 201
     assert resp.json()["meta"]["path"] == "orphaned/doc"
 
-    result = (await client.get("/api/v1/templates/svc/validate")).json()
+    result = (await client.get(f"/api/v1/templates/{template_id}/validate")).json()
     assert "orphaned/doc" in result["extra"]
 
 
@@ -210,9 +215,12 @@ async def test_template_export_endpoint(client: AsyncClient, tmp_path):
     import json
     import zipfile
 
-    await client.post(
-        "/api/v1/templates", json={"name": "svc", "structure": _STRUCTURE}
-    )
+    ref = (
+        await client.post(
+            "/api/v1/templates", json={"name": "svc", "structure": _STRUCTURE}
+        )
+    ).json()
+    template_id = ref["id"]
     await client.post(
         "/api/v1/docs",
         json={
@@ -223,7 +231,7 @@ async def test_template_export_endpoint(client: AsyncClient, tmp_path):
         },
     )
 
-    resp = await client.get("/api/v1/templates/svc/export")
+    resp = await client.get(f"/api/v1/templates/{template_id}/export")
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "application/zip"
     assert 'filename="svc.zip"' in resp.headers["content-disposition"]

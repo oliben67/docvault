@@ -19,7 +19,7 @@ from ..core.template import (
     DeployVaultInput,
     Template,
     TemplateCreateInput,
-    TemplateIngestResult,
+    TemplateRef,
     TemplateValidation,
 )
 from ..exceptions import (
@@ -276,11 +276,11 @@ def create_router(
 
     @router.post(
         "/templates",
-        response_model=TemplateIngestResult,
+        response_model=TemplateRef,
         status_code=status.HTTP_201_CREATED,
         tags=["Templates"],
         summary="Create a template",
-        response_description="The created template, plus any documents ingested from a folder",
+        response_description="Name and ID of the created template",
         responses={
             422: {
                 "description": "A slot's json_schema is not a valid JSON Schema draft-7"
@@ -289,49 +289,36 @@ def create_router(
     )
     async def create_template(
         inp: TemplateCreateInput, _p: Any = Depends(auth_dep)
-    ) -> TemplateIngestResult:
-        """Register a new folder-structure template.
+    ) -> TemplateRef:
+        """Register a new template and return its name and ID.
 
-        **structure** is a flat mapping of slot paths (e.g. `"config/app"`,
-        `"docs/readme"`) to :class:`DocSlot` definitions.  Use `"/"` to express
-        folder nesting — the vault stores documents flat but preserves the path in
-        metadata so structure validation can be checked at any time.
+        **structure** maps slot paths to :class:`DocSlot` definitions.
 
-        Each slot may declare:
-
-        - **required** (`true` by default) — whether the slot must be occupied for
-          the template to be considered satisfied.
-        - **json_schema** — an optional JSON Schema (draft-7) that the document's
-          content must conform to when it is created or updated in that slot.
-
-        If **folder_path** (a server-side filesystem path) is provided, docvault
-        scans that directory for `*.json` files, ingests each as a vault document,
-        and automatically builds the template structure from the discovered files.
+        **path** (optional server-side filesystem path) may point to a folder
+        (scans all files recursively) or a single file (creates one flat slot).
         LLM summarization is applied to each ingested document when configured.
 
-        A template is **satisfied** when every `required=true` slot has at least one
-        document in the vault whose `(template, path)` pair matches.  Check the
-        current satisfaction status with `GET /templates/{name}/validate`.
+        Use the returned **id** for all subsequent operations on this template.
         """
         return await store.create_template(inp, creator=_p.get("user"))
 
     @router.get(
-        "/templates/{name}",
+        "/templates/{template_id}",
         response_model=Template,
         tags=["Templates"],
         summary="Get a template",
-        response_description="Template definition including the full folder structure",
+        response_description="Template definition including the full slot structure",
         responses={404: {"description": "Template not found"}},
     )
-    async def get_template(name: str, _p: Any = Depends(auth_dep)) -> Template:
-        """Fetch a single template by name."""
+    async def get_template(template_id: str, _p: Any = Depends(auth_dep)) -> Template:
+        """Fetch a single template by its ID."""
         try:
-            return await store.get_template(name)
+            return await store.get_template(template_id)
         except TemplateNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @router.get(
-        "/templates/{name}/validate",
+        "/templates/{template_id}/validate",
         response_model=TemplateValidation,
         tags=["Templates"],
         summary="Validate template structure against the vault",
@@ -339,28 +326,16 @@ def create_router(
         responses={404: {"description": "Template not found"}},
     )
     async def validate_template(
-        name: str, _p: Any = Depends(auth_dep)
+        template_id: str, _p: Any = Depends(auth_dep)
     ) -> TemplateValidation:
-        """Check whether all required slots in the template are occupied by vault documents.
-
-        A slot is **satisfied** when at least one document exists in the vault with
-        `template == name` and `path == slot_key`.
-
-        The response includes:
-
-        - **valid** — `true` when no required slots are missing.
-        - **satisfied** — slot paths that have at least one matching document.
-        - **missing** — required slot paths with no matching document.
-        - **extra** — document paths that reference this template but don't match
-          any defined slot (orphaned documents).
-        """
+        """Check whether all required slots in the template are occupied by vault documents."""
         try:
-            return await store.validate_template(name)
+            return await store.validate_template(template_id)
         except TemplateNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @router.get(
-        "/templates/{name}/export",
+        "/templates/{template_id}/export",
         tags=["Templates"],
         summary="Export template as a zip archive",
         response_description=(
@@ -372,42 +347,32 @@ def create_router(
             404: {"description": "Template not found"},
         },
     )
-    async def export_template(name: str, _p: Any = Depends(auth_dep)) -> Response:
-        """Download the template and all its slot documents as a zip archive.
-
-        The archive layout mirrors the template's folder structure:
-
-        ```
-        _template.json       full Template metadata (id, version, structure …)
-        config/app.json      content of the document assigned to slot config/app
-        config/database.json … and so on for every slot that has a document
-        ```
-
-        Pass this archive to the `docvault.tools.deploy.deploy_template` function
-        (or the `docvault tools deploy` CLI command) to extract it onto a host
-        filesystem.
-        """
+    async def export_template(
+        template_id: str, _p: Any = Depends(auth_dep)
+    ) -> Response:
+        """Download the template and all its slot documents as a zip archive."""
         try:
-            zip_bytes = await store.export_template_zip(name)
+            zip_bytes = await store.export_template_zip(template_id)
+            tpl = await store.get_template(template_id)
         except TemplateNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return Response(
             content=zip_bytes,
             media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{name}.zip"'},
+            headers={"Content-Disposition": f'attachment; filename="{tpl.name}.zip"'},
         )
 
     @router.delete(
-        "/templates/{name}",
+        "/templates/{template_id}",
         status_code=status.HTTP_204_NO_CONTENT,
         tags=["Templates"],
         summary="Delete a template",
         responses={404: {"description": "Template not found"}},
     )
-    async def delete_template(name: str, _p: Any = Depends(auth_dep)) -> None:
+    async def delete_template(template_id: str, _p: Any = Depends(auth_dep)) -> None:
         """Delete a template. Existing documents that reference this template are unaffected."""
         try:
-            await store.delete_template(name)
+            await store.delete_template(template_id)
         except TemplateNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

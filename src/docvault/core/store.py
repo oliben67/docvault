@@ -16,7 +16,7 @@ from ..exceptions import (
     VaultNotFoundError,
 )
 from .document import CommitInfo, CreateDocInput, Document, DocumentMeta, UpdateDocInput
-from .vault_meta import VaultMeta, VaultVersion
+from .vault_meta import VaultMeta
 from .git_backend import GitBackend
 from .summarizer import DocumentSummarizer
 from .template import (
@@ -24,8 +24,10 @@ from .template import (
     DocSlot,
     Template,
     TemplateCreateInput,
-    TemplateIngestResult,
+    TemplateRef,
     TemplateValidation,
+    create_id,
+    create_id_from_structure,
 )
 
 
@@ -119,7 +121,7 @@ class DocVault:
             return current_summary, current_keywords
         try:
             return await self._summarizer.infer_metadata(content)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return current_summary, current_keywords
 
     # ── Documents ──────────────────────────────────────────────────────────
@@ -127,7 +129,7 @@ class DocVault:
     async def create_doc(self, inp: CreateDocInput) -> Document:
         content = inp.content
         if inp.template and inp.path:
-            template = await self.get_template(inp.template)
+            template = await self._get_template_by_name(inp.template)
             template.validate_slot_content(inp.path, content)
 
         summary, keywords = await self._maybe_summarize(
@@ -150,7 +152,7 @@ class DocVault:
             meta = meta.model_copy(update={"size_bytes": size})
             await self._write_json(meta_path, meta.model_dump(mode="json"))
             msg = inp.commit_message or f"Create document {meta.id}"
-            await self.git.commit(msg, inp.creator, f"{inp.creator}@docvault")
+            await self.git.commit(msg, meta.creator, f"{meta.creator}@docvault")
 
         return Document(meta=meta, content=content)
 
@@ -176,7 +178,7 @@ class DocVault:
             doc = await self.get_doc(doc_id)
 
             if doc.meta.template and doc.meta.path:
-                template = await self.get_template(doc.meta.template)
+                template = await self._get_template_by_name(doc.meta.template)
                 template.validate_slot_content(doc.meta.path, content)
 
             new_summary = inp.summary if inp.summary is not None else doc.meta.summary
@@ -316,21 +318,25 @@ class DocVault:
 
     async def create_template(
         self, inp: TemplateCreateInput, creator: str | None = None
-    ) -> TemplateIngestResult:
-        # Build structure: start from user-provided slots, then add discovered ones.
+    ) -> TemplateRef:
         structure = dict(inp.structure)
         _creator = creator or self.config.git_author_name
 
         discovered: list[tuple[str, dict[str, Any]]] = []
-        if inp.folder_path is not None:
+        if inp.path is not None:
+            src = inp.path
 
             def _scan() -> list[tuple[str, dict[str, Any]]]:
+                files = [src] if src.is_file() else sorted(src.rglob("*"))
                 results: list[tuple[str, dict[str, Any]]] = []
-                for fp in sorted(inp.folder_path.rglob("*")):  # type: ignore[union-attr]
+                for fp in files:
                     if not fp.is_file():
                         continue
-                    rel = fp.relative_to(inp.folder_path)
-                    slot_path = str(rel.with_suffix("")).replace("\\", "/")
+                    if src.is_file():
+                        slot_path = fp.stem
+                    else:
+                        rel = fp.relative_to(src)
+                        slot_path = str(rel.with_suffix("")).replace("\\", "/")
                     try:
                         raw = fp.read_text("utf-8")
                     except (UnicodeDecodeError, OSError):
@@ -349,21 +355,55 @@ class DocVault:
             for slot_path, _ in discovered:
                 structure.setdefault(slot_path, DocSlot())
 
-        # Version: caller-supplied > folder default (1.0.0) > model default (0.1.0)
-        version = inp.version or (
-            VaultVersion(major=1, minor=0, patch=0)
-            if inp.folder_path is not None
-            else None
-        )
-        template = Template(
-            name=inp.name,
-            description=inp.description,
-            structure=structure,
-            **({"version": version} if version is not None else {}),
-        )
-        tpl_path = self._templates_path / f"{template.name}.json"
+        # Compute content-addressable ID — always use template name as first segment.
+        if inp.path is not None:
+            raw_id = create_id(inp.path)
+            parts = raw_id.split(":", 2)
+            new_id = f"{inp.name}:{parts[1]}:{parts[2]}"
+        else:
+            new_id = create_id_from_structure(inp.name, structure)
 
-        # Run LLM inference outside the lock (potentially slow).
+        new_content_hash = new_id.split(":")[-1]
+
+        # Load existing template by name (name is the storage key).
+        tpl_file = self._templates_path / f"{inp.name}.json"
+        existing: Template | None = None
+        if tpl_file.exists():
+            existing = Template(**await self._read_json(tpl_file))
+
+        if existing is not None:
+            existing_content_hash = existing.id.split(":")[-1]
+            # Same name + same content hash → copy, no-op.
+            if existing_content_hash == new_content_hash:
+                return TemplateRef(name=existing.name, id=existing.id)
+            # Different content → revert to known version or bump.
+            if new_content_hash in existing.version_history:
+                new_version = existing.version_history[new_content_hash]
+            else:
+                new_version = max(existing.version_history.values(), default=0) + 1
+            new_version_history = dict(existing.version_history)
+            new_version_history[new_content_hash] = new_version
+            template = Template(
+                id=new_id,
+                name=inp.name,
+                description=inp.description or existing.description,
+                version=new_version,
+                version_history=new_version_history,
+                structure=structure,
+                created_at=existing.created_at,
+            )
+            commit_msg = f"Update template {inp.name!r} to v{new_version}"
+        else:
+            template = Template(
+                id=new_id,
+                name=inp.name,
+                description=inp.description,
+                version=1,
+                version_history={new_content_hash: 1},
+                structure=structure,
+            )
+            commit_msg = f"Create template {inp.name!r}"
+
         prepared: list[tuple[str, dict[str, Any], DocumentMeta]] = []
         for slot_path, content in discovered:
             summary, keywords = await self._maybe_summarize(content, "", [])
@@ -378,9 +418,9 @@ class DocVault:
 
         documents: list[Document] = []
         async with self._lock:
-            await self._write_json(tpl_path, template.model_dump(mode="json"))
+            await self._write_json(tpl_file, template.model_dump(mode="json"))
             await self.git.commit(
-                f"Create template {template.name!r}",
+                commit_msg,
                 self.config.git_author_name,
                 self.config.git_author_email,
             )
@@ -395,27 +435,43 @@ class DocVault:
                 documents.append(Document(meta=meta, content=content))
             if documents:
                 await self.git.commit(
-                    f"Ingest {len(documents)} document(s) from folder into {inp.name!r}",
+                    f"Ingest {len(documents)} document(s) from path into {inp.name!r}",
                     self.config.git_author_name,
                     self.config.git_author_email,
                 )
 
-        return TemplateIngestResult(template=template, documents=documents)
+        return TemplateRef(name=template.name, id=template.id)
 
-    async def get_template(self, name: str) -> Template:
+    async def get_template(self, template_id: str) -> Template:
+        # Template name is the first segment of the ID (format: name:md5:md5).
+        name = template_id.split(":")[0]
+        path = self._templates_path / f"{name}.json"
+        if not path.exists():
+            raise TemplateNotFoundError(f"Template {template_id!r} not found")
+        tpl = Template(**await self._read_json(path))
+        if tpl.id != template_id:
+            raise TemplateNotFoundError(f"Template {template_id!r} not found")
+        return tpl
+
+    async def _get_template_by_name(self, name: str) -> Template:
+        """Internal direct lookup by name — O(1) with name-based storage."""
         path = self._templates_path / f"{name}.json"
         if not path.exists():
             raise TemplateNotFoundError(f"Template {name!r} not found")
         return Template(**await self._read_json(path))
 
-    async def delete_template(self, name: str) -> None:
+    async def delete_template(self, template_id: str) -> None:
+        name = template_id.split(":")[0]
         path = self._templates_path / f"{name}.json"
         if not path.exists():
-            raise TemplateNotFoundError(f"Template {name!r} not found")
+            raise TemplateNotFoundError(f"Template {template_id!r} not found")
+        tpl = Template(**await self._read_json(path))
+        if tpl.id != template_id:
+            raise TemplateNotFoundError(f"Template {template_id!r} not found")
         async with self._lock:
             await asyncio.to_thread(path.unlink)
             await self.git.commit(
-                f"Delete template {name!r}",
+                f"Delete template {tpl.name!r}",
                 self.config.git_author_name,
                 self.config.git_author_email,
             )
@@ -432,24 +488,17 @@ class DocVault:
 
         return await asyncio.to_thread(_read_all)
 
-    async def validate_template(self, name: str) -> TemplateValidation:
-        """Check which required slots in *name* are occupied by vault documents."""
-        template = await self.get_template(name)
-        metas = await self.list_docs(template=name)
+    async def validate_template(self, template_id: str) -> TemplateValidation:
+        """Check which required slots in *template_id* are occupied by vault documents."""
+        template = await self.get_template(template_id)
+        metas = await self.list_docs(template=template.name)
         occupied = {m.path for m in metas if m.path is not None}
         return template.check_structure(occupied)
 
-    async def export_template_zip(self, name: str) -> bytes:
-        """Package a template and all its slot documents into an in-memory zip archive.
-
-        The zip layout mirrors the template's folder structure::
-
-            _template.json        – full Template metadata (id, version, structure …)
-            config/app.json       – content of the document assigned to slot config/app
-            config/database.json  – … and so on for every slot that has a document
-        """
-        template = await self.get_template(name)
-        metas = await self.list_docs(template=name)
+    async def export_template_zip(self, template_id: str) -> bytes:
+        """Package a template and all its slot documents into an in-memory zip archive."""
+        template = await self.get_template(template_id)
+        metas = await self.list_docs(template=template.name)
 
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -467,9 +516,10 @@ class DocVault:
                     else None
                 )
                 if source_ext:
-                    entry_name = f"{meta.path}.{source_ext}"
-                    entry_bytes = doc.content.get("content", "").encode("utf-8")
-                    zf.writestr(entry_name, entry_bytes)
+                    zf.writestr(
+                        f"{meta.path}.{source_ext}",
+                        doc.content.get("content", "").encode("utf-8"),
+                    )
                 else:
                     zf.writestr(
                         f"{meta.path}.json",
@@ -479,7 +529,7 @@ class DocVault:
         return buf.getvalue()
 
     async def deploy_vault(self, inp: DeployVaultInput) -> list[Document]:
-        template = await self.get_template(inp.template_name)
+        template = await self._get_template_by_name(inp.template_name)
         prepared: list[tuple[DocumentMeta, dict[str, Any]]] = []
 
         for spec in inp.documents:

@@ -22,7 +22,9 @@ from __future__ import annotations
 import asyncio
 import tempfile
 from pathlib import Path
+from types import TracebackType
 from typing import Any
+from typing_extensions import Self
 
 
 # ── Thin client wrapper ────────────────────────────────────────────────────────
@@ -38,12 +40,17 @@ class DocVaultClient:
             headers["X-API-Key"] = api_key
         self._client = httpx.AsyncClient(base_url=base_url, headers=headers, timeout=10.0)
 
-    async def __aenter__(self) -> "DocVaultClient":
+    async def __aenter__(self) -> Self:
         await self._client.__aenter__()
         return self
 
-    async def __aexit__(self, *args: Any) -> None:
-        await self._client.__aexit__(*args)
+    async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None ,
+            exc_value: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> None:
+        await self._client.__aexit__(*[exc_type, exc_value, traceback])
 
     def _raise(self, resp: Any) -> Any:
         resp.raise_for_status()

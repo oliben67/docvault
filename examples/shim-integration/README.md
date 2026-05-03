@@ -38,18 +38,24 @@ cd examples/shim-integration
 uv run python demo.py
 ```
 
-`demo.py` connects to the vault, retrieves the `project` template ID, calls
-the server's export endpoint to download a zip of all template documents, and
-extracts them into `template-deployment/`. Output looks like:
+`demo.py` is an upsert — it calls `create_template` with the `template-source/`
+folder. If the folder contents have not changed since the last run the existing
+template is returned unchanged; if the folder was modified the version number
+is incremented. The script then calls the server's export endpoint to download
+a zip of all slot documents and extracts them into `template-deployment/`.
+Output looks like:
 
 ```
-Template: project/v1.0.0/<hash>
+Template: project:4e0bafd4a90aec2fd17daf34bb63ee48:a4c09516f9b683a2fbd288f3b157a51e
 Deployed 4 file(s) to .../template-deployment:
-  Project/SubDir1/file1.json
-  Project/SubDir1/file2.json
-  Project/SubDir2/data.json
-  Project/SubDir2/notes.json
+  SubDir1/file1.json
+  SubDir1/file2.json
+  SubDir2/data.json
+  SubDir2/notes.json
 ```
+
+The template ID format is `{name}:{md5(path)}:{md5(content)}`. The last
+segment changes whenever the folder contents change.
 
 ## Endpoints
 
@@ -67,23 +73,7 @@ Deployed 4 file(s) to .../template-deployment:
 `main.py` shows three ways to wire DocVault's lifecycle into your app.
 Switch between them by commenting/uncommenting the relevant block.
 
-### Pattern 1 — `wrap_lifespan` (active by default)
-
-Simplest option. Pass the result directly to `FastAPI(lifespan=...)`.
-DocVault boots before the first request is served.
-
-```python
-app = FastAPI(lifespan=shim.wrap_lifespan())
-app.include_router(shim.router)
-```
-
-To compose with an existing lifespan, pass it as an argument:
-
-```python
-app = FastAPI(lifespan=shim.wrap_lifespan(my_existing_lifespan))
-```
-
-### Pattern 2 — `lifespan` context manager (recommended for real apps)
+### Pattern 1 — `lifespan` context manager (active by default in this example)
 
 Full control over startup/shutdown ordering. Use when you need to initialise
 other resources (databases, caches, …) alongside DocVault.
@@ -100,6 +90,21 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(shim.router)
+```
+
+### Pattern 2 — `wrap_lifespan` helper
+
+Simplest option when you have no existing lifespan.
+
+```python
+app = FastAPI(lifespan=shim.wrap_lifespan())
+app.include_router(shim.router)
+```
+
+Compose with an existing lifespan by passing it as an argument:
+
+```python
+app = FastAPI(lifespan=shim.wrap_lifespan(my_existing_lifespan))
 ```
 
 ### Pattern 3 — `startup` event (legacy)

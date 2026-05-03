@@ -356,10 +356,13 @@ def templates_list(config_file: Path | None = _CFG_OPT) -> None:
             if not templates:
                 out.print("[dim]No templates found.[/dim]")
                 return
-            table = Table("Name", "Description", "Created")
+            table = Table("Name", "ID", "Description", "Created")
             for t in templates:
                 table.add_row(
-                    t.name, t.description or "-", t.created_at.strftime("%Y-%m-%d")
+                    t.name,
+                    t.id,
+                    t.description or "-",
+                    t.created_at.strftime("%Y-%m-%d"),
                 )
             out.print(table)
 
@@ -370,7 +373,7 @@ def templates_list(config_file: Path | None = _CFG_OPT) -> None:
 
 @templates_app.command("get")
 def templates_get(
-    name: str = typer.Argument(..., help="Template name"),
+    template_id: str = typer.Argument(..., help="Template ID"),
     config_file: Path | None = _CFG_OPT,
 ) -> None:
     """Print a template as JSON."""
@@ -378,7 +381,7 @@ def templates_get(
 
         async def _go() -> None:
             store = await _open(config_file)
-            template = await store.get_template(name)
+            template = await store.get_template(template_id)
             out.print_json(json.dumps(template.model_dump(mode="json")))
 
         _run(_go())
@@ -392,15 +395,15 @@ def templates_create(
     file: Path | None = typer.Option(
         None, "--file", "-f", help="JSON file with structure dict (slot-path → DocSlot)"
     ),
-    from_folder: Path | None = typer.Option(
-        None, "--from-folder", help="Ingest all *.json files in this directory"
+    path: Path | None = typer.Option(
+        None, "--path", "-p", help="File or folder to ingest as template slots"
     ),
     description: str = typer.Option("", "--description", "-d"),
     config_file: Path | None = _CFG_OPT,
 ) -> None:
-    """Create a template from a structure file or by scanning a folder."""
-    if file is None and from_folder is None:
-        err.print("Error: provide --file or --from-folder")
+    """Create a template from a structure file or by ingesting a file/folder."""
+    if file is None and path is None:
+        err.print("Error: provide --file or --path")
         raise typer.Exit(1)
     try:
         structure = _load_json(file) if file else {}
@@ -408,19 +411,16 @@ def templates_create(
             name=name,
             description=description,
             structure=structure,
-            folder_path=from_folder,
+            path=path,
         )
 
         async def _go() -> None:
             store = await _open(config_file)
-            result = await store.create_template(inp)
+            ref = await store.create_template(inp)
             out.print(
-                f"[green]✓[/green] Created template [bold]{result.template.name}[/bold]"
+                f"[green]✓[/green] Created template [bold]{ref.name}[/bold]"
+                f"  id={ref.id}"
             )
-            if result.documents:
-                out.print(f"  Ingested {len(result.documents)} document(s)")
-                for doc in result.documents:
-                    out.print(f"  [dim]{doc.meta.id[:12]}[/dim]  {doc.meta.path}")
 
         _run(_go())
     except (DocVaultError, json.JSONDecodeError, ValueError) as exc:
@@ -429,19 +429,19 @@ def templates_create(
 
 @templates_app.command("delete")
 def templates_delete(
-    name: str = typer.Argument(..., help="Template name"),
+    template_id: str = typer.Argument(..., help="Template ID"),
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
     config_file: Path | None = _CFG_OPT,
 ) -> None:
     """Delete a template."""
     if not force:
-        typer.confirm(f"Delete template {name!r}?", abort=True)
+        typer.confirm(f"Delete template {template_id!r}?", abort=True)
     try:
 
         async def _go() -> None:
             store = await _open(config_file)
-            await store.delete_template(name)
-            out.print(f"[green]✓[/green] Deleted template [bold]{name}[/bold]")
+            await store.delete_template(template_id)
+            out.print(f"[green]✓[/green] Deleted template [bold]{template_id}[/bold]")
 
         _run(_go())
     except DocVaultError as exc:

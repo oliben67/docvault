@@ -96,7 +96,6 @@ async def test_summarize_all_no_llm(client: AsyncClient):
 
 
 async def test_vault_deploy(client: AsyncClient):
-    # Create template
     await client.post(
         "/api/v1/templates",
         json={
@@ -239,20 +238,20 @@ async def test_create_doc_response_is_json(client: AsyncClient):
 
 
 async def test_template_export_content_type_zip(client: AsyncClient):
-    await client.post("/api/v1/templates", json={"name": "export-test"})
-    resp = await client.get("/api/v1/templates/export-test/export")
+    ref = (await client.post("/api/v1/templates", json={"name": "export-test"})).json()
+    resp = await client.get(f"/api/v1/templates/{ref['id']}/export")
     assert resp.status_code == 200
     assert "application/zip" in resp.headers["content-type"]
 
 
-# ── TemplateIngestResult shape ────────────────────────────────────────────────
+# ── TemplateRef response shape ────────────────────────────────────────────────
 
 
 async def test_create_template_response_shape(client: AsyncClient):
     resp = await client.post("/api/v1/templates", json={"name": "shaped"})
     assert resp.status_code == 201
     body = resp.json()
-    assert "template" in body
-    assert "documents" in body
-    assert body["template"]["name"] == "shaped"
-    assert isinstance(body["documents"], list)
+    assert "name" in body
+    assert "id" in body
+    assert body["name"] == "shaped"
+    assert len(body["id"]) > 0

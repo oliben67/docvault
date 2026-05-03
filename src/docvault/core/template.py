@@ -1,42 +1,73 @@
 from __future__ import annotations
 
+import glob as _glob
 import hashlib
 import json as _json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import jsonschema
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..exceptions import TemplateValidationError
-from .vault_meta import VaultVersion
 
 
-def _hash_structure(structure: dict[str, Any]) -> str:
-    """Hash a template's slot structure using the nested-file-hash algorithm.
+def create_id(path: str | Path) -> str:
+    """Hash a file or folder tree into a content-addressable ID string.
 
-    Each slot's JSON representation is hashed individually, then the hashes are
-    assembled into a nested dict that mirrors the slot-path hierarchy.  The final
-    hash is SHA-256 of that nested dict serialised as indented JSON — identical to
-    how ``get_nested_hashes`` works for files on disk.
+    Returns ``{name}:{md5(path)}:{md5(content)}``.
     """
-    root: dict[str, Any] = {}
-    for slot_path in sorted(structure):
-        slot = structure[slot_path]
-        slot_bytes = _json.dumps(
-            slot.model_dump(mode="json") if hasattr(slot, "model_dump") else slot,
-            sort_keys=True,
-        ).encode("utf-8")
-        slot_hash = hashlib.sha256(slot_bytes).hexdigest()
+    path = str(Path(path).absolute())
 
-        parts = slot_path.split("/")
-        node = root
-        for part in parts[:-1]:
-            node = node.setdefault(part, {})
-        node[parts[-1]] = slot_hash
+    def _create_file_id(file_path: str) -> str:
+        with open(file_path, "rb") as f:
+            content = f.read()
+        return (
+            f"{Path(file_path).name}"
+            f":{hashlib.md5(file_path.encode('utf-8')).hexdigest()}"
+            f":{hashlib.md5(content).hexdigest()}"
+        )
 
-    return hashlib.sha256(_json.dumps(root, indent=4).encode("utf-8")).hexdigest()
+    if not os.path.isdir(path) and os.path.exists(path):
+        return _create_file_id(path)
+    else:
+        hashes = []
+        search_pattern = os.path.join(path, "**", "*")
+        for file_path in _glob.glob(search_pattern, recursive=True):
+            if os.path.isfile(file_path):
+                hashes.append(_create_file_id(file_path))
+        if not hashes:
+            return (
+                f"{Path(path).name}"
+                f":{hashlib.md5(path.encode('utf-8')).hexdigest()}"
+                f":{hashlib.md5(path.encode('utf-8')).hexdigest()}"
+            )
+    return (
+        f"{Path(path).name}"
+        f":{hashlib.md5(path.encode('utf-8')).hexdigest()}"
+        f":{hashlib.md5(''.join(sorted(hashes)).encode('utf-8')).hexdigest()}"
+    )
+
+
+def create_id_from_structure(name: str, structure: dict) -> str:
+    """Hash a template's in-memory structure into a content-addressable ID.
+
+    Returns ``{name}:{md5(name)}:{md5(structure_json)}``.
+    """
+    content = _json.dumps(
+        {
+            k: (v.model_dump(mode="json") if hasattr(v, "model_dump") else v)
+            for k, v in structure.items()
+        },
+        sort_keys=True,
+    )
+    return (
+        f"{name}"
+        f":{hashlib.md5(name.encode()).hexdigest()}"
+        f":{hashlib.md5(content.encode()).hexdigest()}"
+    )
 
 
 class DocSlot(BaseModel):
@@ -70,41 +101,24 @@ class TemplateValidation(BaseModel):
 class Template(BaseModel):
     """A folder structure blueprint made up of named document slots.
 
-    ``structure`` maps slot paths (e.g. ``"config/app"``, ``"docs/readme"``)
-    to :class:`DocSlot` definitions.  Paths use ``"/"`` as a separator to
-    express folder nesting; the vault itself stores documents flat, but the
-    path is preserved in document metadata so the structure can be validated.
+    ``id`` uses the format ``{name}:{md5(path)}:{md5(content)}`` and is
+    computed externally by the store based on the source path or structure.
 
-    A template is **satisfied** when every ``required=True`` slot has at least
-    one document in the vault whose ``(template, path)`` matches.
-
-    ``id`` is auto-computed as ``{name}/v{version}/{hash}`` where the hash is a
-    SHA-256 over the nested structure — identical to ``get_nested_hashes`` run on
-    the equivalent folder of files.  It is stored alongside the template so it
-    remains stable even if the hashing algorithm changes in the future.
+    ``version`` starts at ``1`` and increments each time the content changes.
+    ``version_history`` maps content-hash → version number so the server can
+    revert to a previous version when the content matches a known snapshot.
     """
 
     id: str = ""
     name: str
     description: str = ""
-    version: VaultVersion = Field(default_factory=VaultVersion)
+    version: int = 1
+    version_history: dict[str, int] = Field(default_factory=dict)
     structure: dict[str, DocSlot] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
-    @model_validator(mode="after")
-    def _compute_id(self) -> Template:
-        if not self.id:
-            self.id = f"{self.name}/v{self.version}/{_hash_structure(self.structure)}"
-        return self
-
     def validate_slot_content(self, path: str, content: dict[str, Any]) -> None:
-        """Raise :exc:`TemplateValidationError` if *content* violates the slot's schema.
-
-        Unknown paths (not defined in the structure) are silently allowed — they
-        will appear in the ``extra`` field of :meth:`check_structure`.  This lets
-        documents be created freely while the template defines only what *must*
-        exist, not what *can* exist.
-        """
+        """Raise :exc:`TemplateValidationError` if *content* violates the slot's schema."""
         slot = self.structure.get(path)
         if slot is None:
             return
@@ -134,11 +148,11 @@ class Template(BaseModel):
         )
 
 
-class TemplateIngestResult(BaseModel):
-    """Result of creating a template; *documents* is non-empty only for folder ingestion."""
+class TemplateRef(BaseModel):
+    """Lightweight reference returned when a template is created."""
 
-    template: Template
-    documents: list[Any]  # list[Document] — typed as Any to avoid circular import
+    name: str
+    id: str
 
 
 class TemplateCreateInput(BaseModel):
@@ -164,10 +178,6 @@ class TemplateCreateInput(BaseModel):
                         "description": "Database connection settings",
                         "required": True,
                     },
-                    "docs/readme": {
-                        "description": "Service README",
-                        "required": False,
-                    },
                 },
             }
         }
@@ -176,22 +186,14 @@ class TemplateCreateInput(BaseModel):
     name: str
     description: str = ""
     structure: dict[str, DocSlot] = Field(default_factory=dict)
-    # Both fields are input-only and excluded from model_dump() / stored JSON.
-    folder_path: Path | None = Field(default=None, exclude=True)
-    version: VaultVersion | None = Field(
-        default=None,
-        exclude=True,
-        description=(
-            "Override the template version. "
-            "Defaults to v1.0.0 when folder_path is given, v0.1.0 otherwise."
-        ),
-    )
+    # Input-only: path to a folder (scans all files) or a single file (one flat slot).
+    path: Path | None = Field(default=None, exclude=True)
 
-    @field_validator("folder_path")
+    @field_validator("path")
     @classmethod
-    def _check_folder(cls, v: Path | None) -> Path | None:
-        if v is not None and not v.is_dir():
-            raise ValueError(f"folder_path {v!r} is not an existing directory")
+    def _check_path(cls, v: Path | None) -> Path | None:
+        if v is not None and not v.exists():
+            raise ValueError(f"path {v!r} does not exist")
         return v
 
 

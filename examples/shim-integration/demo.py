@@ -17,7 +17,6 @@ from pathlib import Path
 from docvault.config import VaultConfig
 from docvault.core.store import DocVault
 from docvault.core.template import TemplateCreateInput
-from docvault.exceptions import TemplateNotFoundError
 from docvault.tools import deploy_template
 
 VAULT_DIR = Path(__file__).parent / ".demo-vault"
@@ -31,19 +30,17 @@ async def _load_template_id() -> str:
     config = VaultConfig(vault_path=VAULT_DIR, vault_name="hello-world-vault")
     store = DocVault(config)
     await store.init()
-    try:
-        tpl = await store.get_template(TEMPLATE_NAME)
-        return tpl.id
-    except TemplateNotFoundError:
-        result = await store.create_template(
-            TemplateCreateInput(
-                name=TEMPLATE_NAME,
-                description="Loaded from template-source folder",
-                folder_path=TEMPLATE_SOURCE,
-            ),
-            creator="demo",
-        )
-        return result.template.id
+    # create_template is an upsert — returns the existing ID if folder content
+    # has not changed since the last run, or bumps the version if it has.
+    result = await store.create_template(
+        TemplateCreateInput(
+            name=TEMPLATE_NAME,
+            description="Loaded from template-source folder",
+            path=TEMPLATE_SOURCE,
+        ),
+        creator="demo",
+    )
+    return result.id
 
 
 def main() -> None:

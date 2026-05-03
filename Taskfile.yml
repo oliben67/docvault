@@ -43,14 +43,16 @@ tasks:
     cmd: uv build
 
   publish:
-    desc: Build and publish to PyPI
+    desc: Clean dist, build, and publish to PyPI
     cmds:
+      - rm -rf dist
       - task: build
       - uv publish --publish-url https://upload.pypi.org/legacy/ --token $(python3 -c "import configparser; c=configparser.ConfigParser(); c.read('{{.HOME}}/.pypirc'); print(c['pypi']['password'])")
 
   publish:test:
-    desc: Build and publish to TestPyPI
+    desc: Clean dist, build, and publish to TestPyPI
     cmds:
+      - rm -rf dist
       - task: build
       - uv publish --publish-url https://test.pypi.org/legacy/ --token $(python3 -c "import configparser; c=configparser.ConfigParser(); c.read('{{.HOME}}/.pypirc'); print(c['testpypi']['password'])")
 

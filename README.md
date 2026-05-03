@@ -4,7 +4,7 @@ DocVault is a git-backed document store for structured data. Every write is a gi
 
 It ships as a standalone REST API, an embeddable FastAPI shim, and a CLI — fitting equally as an independent microservice or as a library embedded inside your existing application.
 
-Documents can be plain JSON or any text-based file. Templates define named folder structures with optional JSON Schema validation per slot. A template can be bootstrapped from a local directory, exported as a zip archive, and deployed to any target path — preserving original file names and extensions. The vault carries a semantic version that can be bumped to create a permanent git-tag snapshot of the entire collection. An optional LLM integration (Claude) auto-generates summaries and keywords from document content.
+Documents can be plain JSON or any text-based file. Templates define named folder structures with optional per-slot JSON Schema validation. Templates are content-addressable: their ID encodes both the source path and a hash of the content, so any change to the folder is detected automatically and increments the template version. Revert a folder to a previous snapshot and the version number reverts with it. A template can be bootstrapped from a local directory, exported as a zip archive, and deployed to any target path. The vault carries a semantic version that can be bumped to create a permanent git-tag snapshot of the entire collection. An optional LLM integration (Claude) auto-generates summaries and keywords from document content.
 
 ---
 
@@ -21,6 +21,12 @@ Documents can be plain JSON or any text-based file. Templates define named folde
   - [Authentication](#authentication-in-the-shim)
   - [Custom URL prefix](#custom-url-prefix)
   - [Testing your integration](#testing-your-shim-integration)
+- [Templates & versioning](#templates--versioning)
+  - [Creating a template](#creating-a-template)
+  - [Content-addressable IDs](#content-addressable-ids)
+  - [Integer versioning and upsert](#integer-versioning-and-upsert)
+  - [Version revert](#version-revert)
+  - [Copies](#copies)
 - [Configuration](#configuration)
 - [CLI reference](#cli-reference)
 - [LLM summarization](#llm-summarization)
@@ -33,8 +39,10 @@ Documents can be plain JSON or any text-based file. Templates define named folde
 
 - **Git-backed storage** — every document write (create, update, delete) produces a git commit. Full history with author, timestamp, and message.
 - **Point-in-time retrieval** — fetch any document at any commit SHA, tag, or branch.
-- **JSON Schema templates** — register named schemas; documents are validated and default-filled on creation/update.
-- **Vault versioning** — bump the vault's semantic version and create a git tag snapshot.
+- **JSON Schema templates** — define named folder structures; each slot can carry its own JSON Schema draft-7 constraint validated on every write.
+- **Content-addressable template IDs** — template IDs encode `{name}:{path_hash}:{content_hash}`. Change the source folder and the ID changes; revert the folder and the original ID comes back.
+- **Integer template versioning** — templates start at version `1`. Each detected content change bumps the version. Reverting to a previously-seen content snapshot reverts the version number too.
+- **Vault versioning** — bump the vault's semantic version and create a git tag snapshot of the entire collection.
 - **Batch deploy** — create many documents from a single template in one atomic commit.
 - **LLM summarization** — auto-generate `summary` and `keywords` from document content using Claude.
 - **Flexible authentication** — none (dev), static API keys, or passthrough to your own auth system.
@@ -47,13 +55,13 @@ Documents can be plain JSON or any text-based file. Templates define named folde
 
 ```bash
 # Core (REST API + CLI)
-pip install docvault
+pip install py-docvault
 # or
-uv add docvault
+uv add py-docvault
 
 # With LLM summarization
-pip install "docvault[llm]"
-uv add "docvault[llm]"
+pip install "py-docvault[llm]"
+uv add "py-docvault[llm]"
 ```
 
 Requires Python 3.11+.
@@ -173,7 +181,7 @@ app.include_router(shim.router)
 
 ### Pattern 3: direct startup call
 
-Use this when your framework manages dependencies through a DI container, service locator, or explicit `on_startup` hook (e.g. a background worker, Celery beat, or a plain asyncio script).
+Use this when your framework manages dependencies through a DI container, service locator, or explicit `on_startup` hook.
 
 ```python
 shim = DocVaultShim(config)
@@ -278,6 +286,110 @@ async def test_my_integration():
 `asgi_lifespan_client` manually drives the ASGI `lifespan.startup` / `lifespan.shutdown` event cycle before and after yielding the client.
 
 Tests that only hit `/health` or test auth rejection (no store access needed) can use `AsyncClient(transport=ASGITransport(app=app))` directly.
+
+---
+
+## Templates & versioning
+
+### Creating a template
+
+Templates define a named set of document slots — logical paths such as `"config/app"` or `"docs/readme"` — with optional JSON Schema validation per slot. There are two ways to create one:
+
+**From a structure dict** (define slots explicitly):
+
+```python
+from docvault.core.template import DocSlot, TemplateCreateInput
+from docvault.core.store import DocVault
+
+ref = await store.create_template(
+    TemplateCreateInput(
+        name="microservice",
+        structure={
+            "config/app": DocSlot(
+                required=True,
+                json_schema={
+                    "type": "object",
+                    "required": ["host", "port"],
+                    "properties": {
+                        "host": {"type": "string"},
+                        "port": {"type": "integer"},
+                    },
+                },
+            ),
+            "config/database": DocSlot(required=True),
+            "docs/readme": DocSlot(required=False),
+        },
+    )
+)
+print(ref.name, ref.id)
+```
+
+**From a path** (scan a folder or single file):
+
+```python
+ref = await store.create_template(
+    TemplateCreateInput(name="project-docs", path=Path("./docs-folder"))
+)
+```
+
+The folder is scanned recursively. Each file becomes a slot (using its relative path without extension). The file contents are ingested as vault documents. A single file creates one flat slot named after the file stem.
+
+`create_template` returns a `TemplateRef(name, id)`. Use `id` for all subsequent get/validate/export/delete operations.
+
+### Content-addressable IDs
+
+Template IDs are not random UUIDs — they encode identity and content:
+
+```
+{name}:{md5(path)}:{md5(content)}
+```
+
+- **name** — the template name (first segment, also the storage key)
+- **md5(path)** — hash of the source path (or name for structure-based templates)
+- **md5(content)** — hash of the file tree or structure; this is what changes when content changes
+
+The same `name` + same `content_hash` → same ID. The same `name` + different `content_hash` → different ID.
+
+### Integer versioning and upsert
+
+Template version is an integer starting at `1`. `create_template` is an **upsert**:
+
+| Scenario | Result |
+|----------|--------|
+| Template name does not exist | Created with `version=1` |
+| Same name, same content hash | No-op — existing `TemplateRef` returned unchanged |
+| Same name, new content hash (not seen before) | Version incremented by `max(history) + 1` |
+| Same name, content hash matches a historical snapshot | Version reverted to the snapshot's number |
+
+The `version_history` field on `Template` records every `{content_hash: version}` mapping the template has ever had.
+
+```python
+# Create
+ref_v1 = await store.create_template(TemplateCreateInput(name="svc", path=folder))
+tpl = await store.get_template(ref_v1.id)
+print(tpl.version)        # 1
+print(tpl.version_history)  # {"<hash_a>": 1}
+
+# Change the folder contents
+ref_v2 = await store.create_template(TemplateCreateInput(name="svc", path=folder))
+tpl = await store.get_template(ref_v2.id)
+print(tpl.version)        # 2
+print(tpl.version_history)  # {"<hash_a>": 1, "<hash_b>": 2}
+
+# Revert the folder to its original contents
+ref_v3 = await store.create_template(TemplateCreateInput(name="svc", path=folder))
+tpl = await store.get_template(ref_v3.id)
+print(tpl.version)        # 1  ← reverted
+print(ref_v3.id == ref_v1.id)  # True — same ID as the original
+```
+
+### Version revert
+
+When the source folder is restored to a previously-seen state, the version number goes back to the number recorded for that content hash. History is never erased — reverting to v1 and then making a new change will produce v3, not v2, because v2 remains in history.
+
+### Copies
+
+Two templates are **copies** when they share the same `name` (first segment of the ID) and the same `content_hash` (last segment), regardless of whether the path hash (middle segment) differs. Creating a copy is always a no-op.
 
 ---
 
@@ -399,10 +511,18 @@ docvault docs summarize-all [--overwrite]
 
 ```bash
 docvault templates list
-docvault templates get <NAME>
+docvault templates get <TEMPLATE_ID>
 docvault templates create <NAME> --file schema.json [--description TEXT]
-docvault templates delete <NAME> [--force]
+docvault templates create <NAME> --path ./folder    [--description TEXT]
+docvault templates create <NAME> --path ./file.json [--description TEXT]
+docvault templates delete <TEMPLATE_ID> [--force]
 ```
+
+`--file schema.json` — JSON file mapping slot paths to `DocSlot` objects (explicit structure).
+
+`--path` — folder or single file to ingest as slots. Every file in the folder becomes a document slot; a single file creates one flat slot named after the file stem. `create` is an upsert: if a template with the same name already exists, it is updated if the content changed, or left unchanged if it has not.
+
+`<TEMPLATE_ID>` for `get` and `delete` is the full content-addressable ID returned by `create` (format: `name:md5:md5`). Use `templates list` to see all current IDs.
 
 ---
 
@@ -419,8 +539,8 @@ docvault vault deploy --template NAME --file specs.json
 
 ```json
 [
-  { "content": { "name": "Alice" }, "creator": "hr-bot", "keywords": ["engineering"] },
-  { "content": { "name": "Bob" },  "creator": "hr-bot", "keywords": ["design"] }
+  { "path": "config/app",      "content": { "host": "api.example.com", "port": 8080 }, "creator": "ci-bot" },
+  { "path": "config/database", "content": { "host": "db.internal" },                   "creator": "ci-bot" }
 ]
 ```
 
@@ -528,7 +648,7 @@ task test
 uv run pytest tests/ -v
 ```
 
-The test suite uses `pytest-asyncio` in `auto` mode. All test functions that are `async def` run in their own event loop.
+The test suite uses `pytest-asyncio` in `auto` mode. All async test functions run in their own event loop.
 
 ### Project layout
 
@@ -551,5 +671,6 @@ src/docvault/
     ├── summarizer.py    # DocumentSummarizer (Anthropic API)
     ├── tools/
     │   └── deploy.py    # deploy_template (zip export → local filesystem)
-    └── template.py      # Template, TemplateCreateInput, DeployVaultInput
+    └── template.py      # Template, DocSlot, TemplateCreateInput,
+                         # DeployVaultInput, create_id, create_id_from_structure
 ```

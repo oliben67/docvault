@@ -66,7 +66,7 @@ async def main() -> None:
                 },
             )
         )
-        print(f"Template created: {result.template.name} (id={result.template.id[:20]}...)")
+        print(f"Template created: {result.name} (id={result.id})")
 
         # --- Valid deploy: all required slots, content matches schema ---
         print("\n[1] Valid deploy (all constraints satisfied):")

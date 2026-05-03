@@ -45,9 +45,6 @@ curl http://localhost:8000/openapi.json > docs/openapi.json
 # Without a running server (via Taskfile)
 task openapi
 
-# Import into Swagger Editor
-open https://editor.swagger.io   # paste the JSON content
-
 # Import into Insomnia / Postman
 # File → Import → select docs/openapi.json
 ```
@@ -98,15 +95,16 @@ When embedded via `DocVaultShim(auth_dep=...)`, authentication is handled entire
     "created_at": "2024-01-15T10:30:00Z",
     "updated_at": "2024-01-15T11:00:00Z",
     "creator": "alice",
-    "summary": "Q1 planning document",
-    "keywords": ["planning", "q1"],
+    "summary": "Application configuration",
+    "keywords": ["config", "production"],
     "size_bytes": 128,
-    "template": "report",
-    "named_version": "v1"
+    "template": "microservice",
+    "path": "config/app",
+    "named_version": "v1.0.0"
   },
   "content": {
-    "title": "Q1 Report",
-    "status": "draft"
+    "host": "api.example.com",
+    "port": 8080
   }
 }
 ```
@@ -120,33 +118,71 @@ Same as `Document.meta` — returned by `GET /docs` (list endpoint).
 ```json
 {
   "sha": "a3f9c1d",
-  "message": "Update document 3fa85f64",
+  "message": "Update document 3fa85f64-...",
   "author": "alice",
   "timestamp": "2024-01-15T11:00:00Z"
 }
 ```
 
-### Template
+### TemplateRef
+
+Returned by `POST /templates`. Use the `id` for all subsequent operations.
 
 ```json
 {
-  "name": "employee",
-  "description": "Employee record",
-  "json_schema": {
-    "type": "object",
-    "required": ["name", "role"],
-    "properties": {
-      "name": { "type": "string" },
-      "role": { "type": "string" },
-      "active": { "type": "boolean" }
-    }
+  "name": "microservice",
+  "id": "microservice:c38d2554a47067dba649709913530e2a:a82e10c8397cd6e3f022ab58835fdc2b"
+}
+```
+
+The `id` format is `{name}:{md5(path)}:{md5(content)}`. The last segment changes whenever the source folder or structure changes.
+
+### Template
+
+Full template object returned by `GET /templates` and `GET /templates/{template_id}`.
+
+```json
+{
+  "id": "microservice:c38d2554a47067dba649709913530e2a:a82e10c8397cd6e3f022ab58835fdc2b",
+  "name": "microservice",
+  "description": "Standard microservice document set",
+  "version": 2,
+  "version_history": {
+    "a82e10c8397cd6e3f022ab58835fdc2b": 1,
+    "ff3b1c9d4e2f8a7b0c1d5e6f7a8b9c0d": 2
   },
-  "defaults": { "active": true },
+  "structure": {
+    "config/app": {
+      "description": "Application config",
+      "required": true,
+      "json_schema": {
+        "type": "object",
+        "required": ["host"],
+        "properties": { "host": { "type": "string" }, "port": { "type": "integer" } }
+      }
+    },
+    "config/database": { "description": "Database settings", "required": true, "json_schema": null },
+    "docs/readme":     { "description": "Service README",    "required": false, "json_schema": null }
+  },
   "created_at": "2024-01-10T08:00:00Z"
 }
 ```
 
-### FleetMeta
+`version` is an integer. `version_history` maps content-hash → version number, recording all snapshots the template has ever been at.
+
+### TemplateValidation
+
+```json
+{
+  "template_name": "microservice",
+  "valid": false,
+  "satisfied": ["config/app"],
+  "missing": ["config/database"],
+  "extra": ["orphaned/doc"]
+}
+```
+
+### VaultMeta
 
 ```json
 {
@@ -202,12 +238,9 @@ List metadata for all documents, newest first. All query parameters are optional
 
 **curl**
 ```bash
-# All documents
 curl http://localhost:8000/api/v1/docs
-
-# Filter examples
 curl "http://localhost:8000/api/v1/docs?creator=alice"
-curl "http://localhost:8000/api/v1/docs?template=employee&keywords=engineering,platform"
+curl "http://localhost:8000/api/v1/docs?template=microservice&keywords=production"
 ```
 
 ---
@@ -224,14 +257,14 @@ Create a new document. Returns `201 Created`.
 | `creator` | string | yes | Who is creating the document |
 | `summary` | string | no | Human-readable description (default: `""`) |
 | `keywords` | string[] | no | Tags for filtering (default: `[]`) |
-| `template` | string | no | Template name — tags the document as belonging to that template's folder structure |
+| `template` | string | no | Template name — tags the document as belonging to that template |
 | `path` | string | no | Slot path within the template (e.g. `"config/app"`). Required to validate content against the slot's `json_schema`. |
 | `named_version` | string | no | Arbitrary version label stored in metadata |
 | `commit_message` | string | no | Custom git commit message |
 
 When **both** `template` and `path` are provided:
 - If the slot has a `json_schema`, the content is validated against it (`422` on failure).
-- If the path does not match any slot in the template, the document is created anyway and will appear as `extra` in `GET /templates/{name}/validate`.
+- If the path does not match any slot in the template, the document is created anyway and appears as `extra` in `GET /templates/{template_id}/validate`.
 
 **Response `201`** — `Document`
 
@@ -241,13 +274,12 @@ When **both** `template` and `path` are provided:
 
 **curl**
 ```bash
-# Bare document — no template
+# Bare document
 curl -X POST http://localhost:8000/api/v1/docs \
   -H "Content-Type: application/json" \
   -d '{
     "content": { "title": "Q1 Report", "status": "draft" },
     "creator": "alice",
-    "summary": "First quarter planning document",
     "keywords": ["planning", "q1"]
   }'
 
@@ -268,16 +300,8 @@ curl -X POST http://localhost:8000/api/v1/docs \
 
 Fetch the current content and metadata for a single document.
 
-**Path parameters**
-
-| Parameter | Description |
-|-----------|-------------|
-| `doc_id` | Document UUID |
-
-**Response `200`** — `Document`
-
-**Errors**
-- `404` — document not found
+**Response `200`** — `Document`  
+**Errors** — `404` document not found
 
 **curl**
 ```bash
@@ -288,13 +312,7 @@ curl http://localhost:8000/api/v1/docs/3fa85f64-5717-4562-b3fc-2c963f66afa6
 
 ### `PUT /api/v1/docs/{doc_id}`
 
-Replace the entire content of an existing document. The `creator` is inherited from the original document's metadata.
-
-**Path parameters**
-
-| Parameter | Description |
-|-----------|-------------|
-| `doc_id` | Document UUID |
+Replace the entire content of an existing document. `creator` is inherited from the original metadata.
 
 **Request body**
 
@@ -306,21 +324,14 @@ Replace the entire content of an existing document. The `creator` is inherited f
 | `named_version` | string | no | New version label. Omit to keep the existing value. |
 | `commit_message` | string | no | Custom git commit message |
 
-**Response `200`** — `Document`
-
-**Errors**
-- `404` — document not found
-- `422` — content violates the template's JSON Schema
+**Response `200`** — `Document`  
+**Errors** — `404` not found, `422` schema violation
 
 **curl**
 ```bash
 curl -X PUT http://localhost:8000/api/v1/docs/3fa85f64-5717-4562-b3fc-2c963f66afa6 \
   -H "Content-Type: application/json" \
-  -d '{
-    "content": { "title": "Q1 Report", "status": "approved", "owner": "alice" },
-    "summary": "Approved Q1 planning document",
-    "named_version": "approved"
-  }'
+  -d '{ "content": { "title": "Q1 Report", "status": "approved" }, "named_version": "approved" }'
 ```
 
 ---
@@ -329,18 +340,10 @@ curl -X PUT http://localhost:8000/api/v1/docs/3fa85f64-5717-4562-b3fc-2c963f66af
 
 Delete a document. Returns `204 No Content`.
 
-The deletion is recorded as a git commit — the document remains recoverable via `GET /docs/{id}/at/{ref}` using a historical commit SHA.
+The deletion is a git commit — the document remains recoverable via `GET /docs/{id}/at/{ref}`.
 
-**Path parameters**
-
-| Parameter | Description |
-|-----------|-------------|
-| `doc_id` | Document UUID |
-
-**Response `204`** — no body
-
-**Errors**
-- `404` — document not found
+**Response `204`** — no body  
+**Errors** — `404` not found
 
 **curl**
 ```bash
@@ -353,22 +356,14 @@ curl -X DELETE http://localhost:8000/api/v1/docs/3fa85f64-5717-4562-b3fc-2c963f6
 
 Return the git commit log for a document, newest first.
 
-**Path parameters**
-
-| Parameter | Description |
-|-----------|-------------|
-| `doc_id` | Document UUID |
-
 **Query parameters**
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `max_count` | int | `50` | Maximum number of commits to return |
 
-**Response `200`** — `CommitInfo[]`
-
-**Errors**
-- `404` — document not found
+**Response `200`** — `CommitInfo[]`  
+**Errors** — `404` not found
 
 **curl**
 ```bash
@@ -378,18 +373,8 @@ curl "http://localhost:8000/api/v1/docs/3fa85f64-5717-4562-b3fc-2c963f66afa6/his
 **Example response**
 ```json
 [
-  {
-    "sha": "a3f9c1d",
-    "message": "Update document 3fa85f64-...",
-    "author": "alice",
-    "timestamp": "2024-01-15T11:00:00Z"
-  },
-  {
-    "sha": "b7e2f4a",
-    "message": "Create document 3fa85f64-...",
-    "author": "alice",
-    "timestamp": "2024-01-15T10:30:00Z"
-  }
+  { "sha": "a3f9c1d", "message": "Update document 3fa85f64-...", "author": "alice", "timestamp": "2024-01-15T11:00:00Z" },
+  { "sha": "b7e2f4a", "message": "Create document 3fa85f64-...", "author": "alice", "timestamp": "2024-01-15T10:30:00Z" }
 ]
 ```
 
@@ -403,20 +388,14 @@ Retrieve a point-in-time snapshot of a document.
 
 | Parameter | Description |
 |-----------|-------------|
-| `doc_id` | Document UUID |
 | `ref` | Git ref: commit SHA (full or abbreviated), tag name, or branch name |
 
-**Response `200`** — `Document` (as it existed at that ref)
-
-**Errors**
-- `404` — document not found, or ref does not exist / did not include this document
+**Response `200`** — `Document` (as it existed at that ref)  
+**Errors** — `404` document or ref not found
 
 **curl**
 ```bash
-# Using an abbreviated commit SHA from the history endpoint
 curl http://localhost:8000/api/v1/docs/3fa85f64-5717-4562-b3fc-2c963f66afa6/at/b7e2f4a
-
-# Using a fleet version tag
 curl http://localhost:8000/api/v1/docs/3fa85f64-5717-4562-b3fc-2c963f66afa6/at/v1.2.0
 ```
 
@@ -424,33 +403,15 @@ curl http://localhost:8000/api/v1/docs/3fa85f64-5717-4562-b3fc-2c963f66afa6/at/v
 
 ### `POST /api/v1/docs/{doc_id}/summarize`
 
-Call the LLM to infer a `summary` and `keywords` for a document. Skips documents that already have a summary unless `overwrite=true`.
+Call the LLM to infer `summary` and `keywords`. Requires `llm_api_key` in config.
 
-Requires `llm_api_key` in the vault config.
+**Query parameters** — `overwrite=true` to re-run even if a summary already exists.
 
-**Path parameters**
-
-| Parameter | Description |
-|-----------|-------------|
-| `doc_id` | Document UUID |
-
-**Query parameters**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `overwrite` | bool | `false` | Re-run inference even if a summary already exists |
-
-**Response `200`** — `Document` with updated `meta.summary` and `meta.keywords`
-
-**Errors**
-- `404` — document not found
-- `503` — LLM not configured, or the LLM call failed
+**Response `200`** — `Document`  
+**Errors** — `404` not found, `503` LLM not configured or call failed
 
 **curl**
 ```bash
-curl -X POST "http://localhost:8000/api/v1/docs/3fa85f64-5717-4562-b3fc-2c963f66afa6/summarize"
-
-# Force re-summarize
 curl -X POST "http://localhost:8000/api/v1/docs/3fa85f64-5717-4562-b3fc-2c963f66afa6/summarize?overwrite=true"
 ```
 
@@ -458,25 +419,16 @@ curl -X POST "http://localhost:8000/api/v1/docs/3fa85f64-5717-4562-b3fc-2c963f66
 
 ### `POST /api/v1/docs/summarize/all`
 
-Run LLM inference on every document that is missing a summary. Returns only the documents that were updated.
+Run LLM inference on every document that is missing a summary. Returns only updated documents.
 
-**Query parameters**
+**Query parameters** — `overwrite=true` to re-run on all documents.
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `overwrite` | bool | `false` | Re-run inference on all documents, even those with an existing summary |
-
-**Response `200`** — `Document[]` (only updated documents)
-
-**Errors**
-- `503` — LLM not configured, or a call failed
+**Response `200`** — `Document[]`  
+**Errors** — `503` LLM not configured or call failed
 
 **curl**
 ```bash
 curl -X POST http://localhost:8000/api/v1/docs/summarize/all
-
-# Re-summarize everything
-curl -X POST "http://localhost:8000/api/v1/docs/summarize/all?overwrite=true"
 ```
 
 ---
@@ -485,7 +437,11 @@ curl -X POST "http://localhost:8000/api/v1/docs/summarize/all?overwrite=true"
 
 A template describes a **folder structure** — a named set of document slots organised into logical paths (e.g. `"config/app"`, `"docs/readme"`). Each slot can optionally define a JSON Schema that documents placed in that slot must satisfy.
 
-A template is **satisfied** (valid) when every `required=true` slot has at least one document in the vault whose `(template, path)` matches. Check satisfaction with `GET /templates/{name}/validate`.
+A template is **satisfied** (valid) when every `required=true` slot has at least one document in the vault whose `(template, path)` matches.
+
+### Template versioning
+
+Template IDs encode identity and content: `{name}:{md5(path)}:{md5(content)}`. The last segment changes whenever the source folder or structure changes, which triggers an automatic version increment. See the [README § Templates & versioning](../README.md#templates--versioning) for a detailed explanation.
 
 ### Key concepts
 
@@ -496,41 +452,7 @@ A template is **satisfied** (valid) when every `required=true` slot has at least
 | **Required slot** | Must be satisfied for the template to be valid (`required: true`, the default) |
 | **Optional slot** | `required: false` — contributes to `satisfied` if filled but never blocks validity |
 | **Extra document** | A document whose `(template, path)` pair matches no defined slot |
-
-### Common response schema — `Template`
-
-```json
-{
-  "name": "microservice",
-  "description": "Standard microservice document set",
-  "structure": {
-    "config/app": {
-      "description": "Application config",
-      "required": true,
-      "json_schema": {
-        "type": "object",
-        "required": ["host"],
-        "properties": { "host": { "type": "string" }, "port": { "type": "integer" } }
-      }
-    },
-    "config/database": { "description": "Database settings", "required": true },
-    "docs/readme": { "description": "Service README", "required": false }
-  },
-  "created_at": "2024-01-10T08:00:00Z"
-}
-```
-
-### Common response schema — `TemplateValidation`
-
-```json
-{
-  "template_name": "microservice",
-  "valid": false,
-  "satisfied": ["config/app"],
-  "missing": ["config/database"],
-  "extra": []
-}
-```
+| **Copy** | Two templates with the same `name` and `content_hash` (last ID segment) |
 
 ---
 
@@ -549,13 +471,13 @@ curl http://localhost:8000/api/v1/templates
 
 ### `POST /api/v1/templates`
 
-Register a new template. Returns `201 Created`.
+Register or update a template. This is an **upsert**: if a template with the same `name` already exists, it is compared by content hash and either left unchanged (same content) or updated (new content, version incremented or reverted). Returns `201 Created`.
 
 **Request body**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | yes | Unique template name — used as the `template` field on documents |
+| `name` | string | yes | Template name — storage key and first segment of the ID |
 | `description` | string | no | Human-readable description |
 | `structure` | object | no | Map of slot path → `DocSlot` (default: `{}`) |
 
@@ -567,7 +489,9 @@ Register a new template. Returns `201 Created`.
 | `required` | bool | `true` | Whether the slot must be filled for the template to be valid |
 | `json_schema` | object | `null` | JSON Schema (draft-7) the document's content must conform to |
 
-**Response `201`** — `Template`
+**Response `201`** — `TemplateRef` (`{name, id}`)
+
+The returned `id` must be used for all subsequent get / validate / export / delete operations.
 
 **Errors**
 - `422` — a slot's `json_schema` is not a valid JSON Schema draft-7 document
@@ -592,53 +516,48 @@ curl -X POST http://localhost:8000/api/v1/templates \
           }
         }
       },
-      "config/database": {
-        "description": "Database connection settings",
-        "required": true
-      },
-      "docs/readme": {
-        "description": "Service README",
-        "required": false
-      }
+      "config/database": { "description": "Database connection settings", "required": true },
+      "docs/readme":     { "description": "Service README", "required": false }
     }
   }'
 ```
 
----
-
-### `GET /api/v1/templates/{name}`
-
-Fetch a single template by name.
-
-**Path parameters**
-
-| Parameter | Description |
-|-----------|-------------|
-| `name` | Template name |
-
-**Response `200`** — `Template`
-
-**Errors**
-- `404` — template not found
-
-**curl**
-```bash
-curl http://localhost:8000/api/v1/templates/microservice
+**Example response**
+```json
+{
+  "name": "microservice",
+  "id": "microservice:c38d2554a47067dba649709913530e2a:a82e10c8397cd6e3f022ab58835fdc2b"
+}
 ```
 
 ---
 
-### `GET /api/v1/templates/{name}/validate`
+### `GET /api/v1/templates/{template_id}`
 
-Check whether all required slots are satisfied by current vault documents.
-
-A slot is satisfied when at least one document exists with `template == name` and `path == slot_key`.
+Fetch a single template by its content-addressable ID.
 
 **Path parameters**
 
 | Parameter | Description |
 |-----------|-------------|
-| `name` | Template name |
+| `template_id` | Full template ID as returned by `POST /templates` (format: `name:md5:md5`) |
+
+**Response `200`** — `Template`  
+**Errors** — `404` not found
+
+**curl**
+```bash
+TPL_ID="microservice:c38d2554a47067dba649709913530e2a:a82e10c8397cd6e3f022ab58835fdc2b"
+curl "http://localhost:8000/api/v1/templates/$TPL_ID"
+```
+
+---
+
+### `GET /api/v1/templates/{template_id}/validate`
+
+Check whether all required slots are satisfied by current vault documents.
+
+A slot is satisfied when at least one document exists with `template == name` and `path == slot_key`.
 
 **Response `200`** — `TemplateValidation`
 
@@ -649,17 +568,17 @@ A slot is satisfied when at least one document exists with `template == name` an
 | `missing` | string[] | Required slot paths with no matching document |
 | `extra` | string[] | Document paths that reference this template but match no defined slot |
 
-**Errors**
-- `404` — template not found
+**Errors** — `404` not found
 
 **curl**
 ```bash
-curl http://localhost:8000/api/v1/templates/microservice/validate
+TPL_ID="microservice:c38d2554a47067dba649709913530e2a:a82e10c8397cd6e3f022ab58835fdc2b"
+curl "http://localhost:8000/api/v1/templates/$TPL_ID/validate"
 ```
 
 **Example responses**
 
-*Before any documents are created:*
+*Before any documents:*
 ```json
 {
   "template_name": "microservice",
@@ -683,43 +602,56 @@ curl http://localhost:8000/api/v1/templates/microservice/validate
 
 ---
 
-### `DELETE /api/v1/templates/{name}`
+### `GET /api/v1/templates/{template_id}/export`
+
+Download the template and all its slot documents as a zip archive.
+
+The zip contains:
+- `_template.json` — full template metadata
+- One file per slot document, e.g. `config/app.json`. Non-JSON files preserve their original extension (e.g. `readme.txt`, `data.csv`).
+- Slots with no documents are omitted.
+
+**Response `200`** — `application/zip` with `Content-Disposition: attachment; filename="{name}.zip"`  
+**Errors** — `404` not found
+
+**curl**
+```bash
+TPL_ID="microservice:c38d2554a47067dba649709913530e2a:a82e10c8397cd6e3f022ab58835fdc2b"
+curl -OJ "http://localhost:8000/api/v1/templates/$TPL_ID/export"
+```
+
+---
+
+### `DELETE /api/v1/templates/{template_id}`
 
 Delete a template. Returns `204 No Content`.
 
 Existing documents that reference this template are unaffected — they retain the `template` and `path` fields in their metadata.
 
-**Path parameters**
-
-| Parameter | Description |
-|-----------|-------------|
-| `name` | Template name |
-
-**Response `204`** — no body
-
-**Errors**
-- `404` — template not found
+**Response `204`** — no body  
+**Errors** — `404` not found
 
 **curl**
 ```bash
-curl -X DELETE http://localhost:8000/api/v1/templates/microservice
+TPL_ID="microservice:c38d2554a47067dba649709913530e2a:a82e10c8397cd6e3f022ab58835fdc2b"
+curl -X DELETE "http://localhost:8000/api/v1/templates/$TPL_ID"
 ```
 
 ---
 
-## Fleet
+## Vault
 
-Fleet endpoints manage vault-level metadata and semantic versioning. Bumping the version creates a git tag (`v{major}.{minor}.{patch}`) that acts as a snapshot of the entire vault at that point.
+Vault endpoints manage vault-level metadata and semantic versioning. Bumping the version creates a git tag (`v{major}.{minor}.{patch}`) that acts as a permanent snapshot of the entire vault.
 
-### `GET /api/v1/fleet`
+### `GET /api/v1/vault`
 
-Return the fleet's current metadata.
+Return the vault's current metadata.
 
-**Response `200`** — `FleetMeta`
+**Response `200`** — `VaultMeta`
 
 **curl**
 ```bash
-curl http://localhost:8000/api/v1/fleet
+curl http://localhost:8000/api/v1/vault
 ```
 
 **Example response**
@@ -735,15 +667,15 @@ curl http://localhost:8000/api/v1/fleet
 
 ---
 
-### `GET /api/v1/fleet/versions`
+### `GET /api/v1/vault/versions`
 
-List all git tags that represent fleet version snapshots (tags beginning with `v`).
+List all git tags that represent vault version snapshots (tags beginning with `v`).
 
 **Response `200`** — `string[]`
 
 **curl**
 ```bash
-curl http://localhost:8000/api/v1/fleet/versions
+curl http://localhost:8000/api/v1/vault/versions
 ```
 
 **Example response**
@@ -753,9 +685,9 @@ curl http://localhost:8000/api/v1/fleet/versions
 
 ---
 
-### `POST /api/v1/fleet/version/{bump_type}`
+### `POST /api/v1/vault/version/{bump_type}`
 
-Increment the fleet's semantic version and create a git tag.
+Increment the vault's semantic version and create a git tag.
 
 **Path parameters**
 
@@ -768,18 +700,18 @@ Bump behaviour:
 - `minor` — resets patch to 0 (e.g. `1.2.3` → `1.3.0`)
 - `patch` — increments patch only (e.g. `1.2.3` → `1.2.4`)
 
-**Response `200`** — `FleetMeta` with the updated version
+**Response `200`** — `VaultMeta` with updated version
 
 **curl**
 ```bash
-curl -X POST http://localhost:8000/api/v1/fleet/version/minor
-curl -X POST http://localhost:8000/api/v1/fleet/version/patch
-curl -X POST http://localhost:8000/api/v1/fleet/version/major
+curl -X POST http://localhost:8000/api/v1/vault/version/minor
+curl -X POST http://localhost:8000/api/v1/vault/version/patch
+curl -X POST http://localhost:8000/api/v1/vault/version/major
 ```
 
 ---
 
-### `POST /api/v1/fleet/deploy`
+### `POST /api/v1/vault/deploy`
 
 Batch-create multiple documents from a single template in one atomic git commit.
 
@@ -789,8 +721,8 @@ All documents are validated first. If any fail schema validation the entire batc
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `template_name` | string | yes | Template to validate each document against |
-| `documents` | `DeployDocSpec[]` | yes | Documents to create (see below) |
+| `template_name` | string | yes | Template name to validate each document against |
+| `documents` | `DeployDocSpec[]` | yes | Documents to create |
 | `commit_message` | string | no | Custom git commit message for the batch |
 
 **`DeployDocSpec`**
@@ -804,9 +736,7 @@ All documents are validated first. If any fail schema validation the entire batc
 | `keywords` | string[] | no | Keywords |
 | `named_version` | string | no | Version label |
 
-Each document's content is validated against the slot's `json_schema` (if defined). All documents must reference valid (or at least existing) paths — content validation is per-slot.
-
-**Response `201`** — `Document[]` (all created documents)
+**Response `201`** — `Document[]`
 
 **Errors**
 - `404` — template not found
@@ -814,21 +744,13 @@ Each document's content is validated against the slot's `json_schema` (if define
 
 **curl**
 ```bash
-curl -X POST http://localhost:8000/api/v1/fleet/deploy \
+curl -X POST http://localhost:8000/api/v1/vault/deploy \
   -H "Content-Type: application/json" \
   -d '{
     "template_name": "microservice",
     "documents": [
-      {
-        "path": "config/app",
-        "content": { "host": "api.example.com", "port": 8080 },
-        "creator": "platform-bot"
-      },
-      {
-        "path": "config/database",
-        "content": { "host": "db.internal", "port": 5432 },
-        "creator": "platform-bot"
-      }
+      { "path": "config/app",      "content": { "host": "api.example.com", "port": 8080 }, "creator": "platform-bot" },
+      { "path": "config/database", "content": { "host": "db.internal", "port": 5432 },     "creator": "platform-bot" }
     ],
     "commit_message": "Deploy microservice config docs"
   }'
@@ -843,10 +765,10 @@ curl -X POST http://localhost:8000/api/v1/fleet/deploy \
 | `401 Unauthorized` | Missing or invalid API key (`auth_mode = api_key`) |
 | `403 Forbidden` | Custom `auth_dep` raised a 403 |
 | `404 Not Found` | Document, template, or git ref does not exist |
-| `422 Unprocessable Entity` | Request body fails validation (Pydantic) **or** document content violates the template's JSON Schema |
+| `422 Unprocessable Entity` | Request body fails Pydantic validation **or** document content violates the slot's JSON Schema |
 | `503 Service Unavailable` | LLM summarization requested but not configured, or the LLM API call failed |
 
-All error responses use the standard FastAPI body:
+All error responses:
 
 ```json
 { "detail": "Human-readable error message" }
@@ -857,11 +779,7 @@ For Pydantic validation errors (422), `detail` is an array:
 ```json
 {
   "detail": [
-    {
-      "type": "missing",
-      "loc": ["body", "creator"],
-      "msg": "Field required"
-    }
+    { "type": "missing", "loc": ["body", "creator"], "msg": "Field required" }
   ]
 }
 ```
@@ -873,36 +791,38 @@ For Pydantic validation errors (422), `detail` is an array:
 ```bash
 BASE="http://localhost:8000/api/v1"
 
-# 1. Create a template with a folder structure
-curl -s -X POST $BASE/templates \
+# 1. Create a template
+TPL=$(curl -s -X POST $BASE/templates \
   -H "Content-Type: application/json" \
   -d '{
     "name": "microservice",
     "structure": {
-      "config/app":      {"required": true,  "json_schema": {"type":"object","required":["host"]}},
-      "config/database": {"required": true},
-      "docs/readme":     {"required": false}
+      "config/app":      { "required": true, "json_schema": { "type": "object", "required": ["host"] } },
+      "config/database": { "required": true },
+      "docs/readme":     { "required": false }
     }
-  }' | jq .
+  }')
+echo $TPL | jq .
+TPL_ID=$(echo $TPL | jq -r '.id')
 
-# 2. Check validation — all required slots missing
-curl -s $BASE/templates/microservice/validate | jq .
+# 2. Check validation — required slots are missing
+curl -s "$BASE/templates/$TPL_ID/validate" | jq '{valid, missing}'
 
 # 3. Fill required slots
 curl -s -X POST $BASE/docs \
   -H "Content-Type: application/json" \
-  -d '{"content":{"host":"api.example.com","port":8080},"creator":"alice","template":"microservice","path":"config/app"}' \
+  -d "{\"content\":{\"host\":\"api.example.com\",\"port\":8080},\"creator\":\"alice\",\"template\":\"microservice\",\"path\":\"config/app\"}" \
   | jq .meta.path
 
 curl -s -X POST $BASE/docs \
   -H "Content-Type: application/json" \
-  -d '{"content":{"host":"db.internal"},"creator":"alice","template":"microservice","path":"config/database"}' \
+  -d "{\"content\":{\"host\":\"db.internal\"},\"creator\":\"alice\",\"template\":\"microservice\",\"path\":\"config/database\"}" \
   | jq .meta.path
 
 # 4. Template is now satisfied
-curl -s $BASE/templates/microservice/validate | jq '{valid, missing}'
+curl -s "$BASE/templates/$TPL_ID/validate" | jq '{valid, missing}'
 
-# 5. Create a freestanding document (no template)
+# 5. Create a freestanding document
 DOC_ID=$(curl -s -X POST $BASE/docs \
   -H "Content-Type: application/json" \
   -d '{"content":{"title":"Fix login bug"},"creator":"alice","keywords":["bug","auth"]}' \
@@ -921,9 +841,12 @@ curl -s $BASE/docs/$DOC_ID/history | jq '.[] | {sha, message}'
 FIRST_SHA=$(curl -s $BASE/docs/$DOC_ID/history | jq -r '.[-1].sha')
 curl -s $BASE/docs/$DOC_ID/at/$FIRST_SHA | jq .content
 
-# 9. Bump the fleet version
-curl -s -X POST $BASE/fleet/version/minor | jq .version
+# 9. Export the template as a zip
+curl -s -OJ "$BASE/templates/$TPL_ID/export"
 
-# 8. List all version tags
-curl -s $BASE/fleet/versions
+# 10. Bump the vault version
+curl -s -X POST $BASE/vault/version/minor | jq .version
+
+# 11. List version tags
+curl -s $BASE/vault/versions
 ```

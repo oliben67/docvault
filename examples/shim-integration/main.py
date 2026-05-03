@@ -46,18 +46,18 @@ shim = DocVaultShim(config, app_name="shim-integration-demo")
 async def lifespan(app: FastAPI):
     async with shim.lifespan():
         try:
-            existing = await shim.store.get_template(TEMPLATE_NAME)
+            existing = await shim.store._get_template_by_name(TEMPLATE_NAME)
             app.state.template_id = existing.id
         except TemplateNotFoundError:
             result = await shim.store.create_template(
                 TemplateCreateInput(
                     name=TEMPLATE_NAME,
                     description="Loaded from template-source folder",
-                    folder_path=TEMPLATE_SOURCE,
+                    path=TEMPLATE_SOURCE,
                 ),
                 creator="demo",
             )
-            app.state.template_id = result.template.id
+            app.state.template_id = result.id
         yield
 
 
