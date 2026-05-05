@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "py-docvault"
-version = "0.1.2"
+version = "0.1.3"
 description = "Git-backed document store with REST API, CLI, and FastAPI embedding — every write is a commit, every document has full revision history."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -50,6 +50,11 @@ all = ["py-docvault[llm]"]
 [project.scripts]
 docvault = "docvault.cli.main:app"
 
+[project.urls]
+homepage = "https://github.com/oliben67/docvault"
+repository = "https://github.com/oliben67/docvault"
+documentation = "https://github.com/oliben67/docvault"
+"Bug Tracker" = "https://github.com/python-poetry/poetry/issues"
 
 [tool.uv.build-backend]
 module-name = "docvault"
