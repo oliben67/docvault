@@ -11,7 +11,7 @@ Then visit:
     http://localhost:54321/docs      — Swagger UI (DocVault endpoints + your routes)
     http://localhost:54321/api/v1/health — DocVault health check
 
-Run demo.py (while the server is up) to deploy the template to template-deployment.
+Run demo.py (while the server is up) to deploy the store to template-deployment.
 """
 
 from __future__ import annotations
@@ -23,13 +23,13 @@ from fastapi import FastAPI
 
 from docvault.api import DocVaultShim
 from docvault.config import VaultConfig
-from docvault.core.template import TemplateCreateInput
-from docvault.exceptions import TemplateNotFoundError
+from docvault.core.store import StoreCreateInput
+from docvault.exceptions import StoreNotFoundError
 
 # ── 1. Configure the vault ───────────────────────────────────────────────────
 VAULT_DIR = Path(__file__).parent / ".demo-vault"
-TEMPLATE_SOURCE = Path(__file__).parent / "template-source"
-TEMPLATE_NAME = "project"
+STORE_SOURCE = Path(__file__).parent / "template-source"
+STORE_NAME = "project"
 
 config = VaultConfig(
     vault_path=VAULT_DIR,
@@ -41,23 +41,25 @@ config = VaultConfig(
 shim = DocVaultShim(config, app_name="shim-integration-demo")
 
 
-# ── 3. Lifespan: boot DocVault then load the template-source folder ──────────
+# ── 3. Lifespan: boot DocVault then load the store-source folder ─────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with shim.lifespan():
         try:
-            existing = await shim.store._get_template_by_name(TEMPLATE_NAME)
-            app.state.template_id = existing.id
-        except TemplateNotFoundError:
-            result = await shim.store.create_template(
-                TemplateCreateInput(
-                    name=TEMPLATE_NAME,
+            store_obj = await shim.store.get_store(STORE_NAME)
+            meta = await store_obj.get_meta()
+            app.state.store_id = meta.id
+        except StoreNotFoundError:
+            store_obj = await shim.store.create_store(
+                StoreCreateInput(
+                    name=STORE_NAME,
                     description="Loaded from template-source folder",
-                    path=TEMPLATE_SOURCE,
+                    path=STORE_SOURCE,
                 ),
                 creator="demo",
             )
-            app.state.template_id = result.id
+            meta = await store_obj.get_meta()
+            app.state.store_id = meta.id
         yield
 
 
@@ -94,5 +96,3 @@ async def vault_info():
         "description": vault.description,
         "vault_path": str(VAULT_DIR),
     }
-
-

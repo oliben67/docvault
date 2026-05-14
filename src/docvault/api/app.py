@@ -7,44 +7,36 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from ..config import VaultConfig
-from ..core.store import DocVault  # re-exported for create_mountable_router callers
+from ..core.vault import DocVault  # re-exported for create_mountable_router callers
 from .shim import DocVaultShim
 
 _DESCRIPTION = """\
-**DocVault** is a git-backed document store for structured data. Every write is
-a git commit; every document has a full, auditable revision history; any
-document can be retrieved exactly as it was at any point in time.
-
-It ships as a standalone REST API, an embeddable FastAPI shim, and a CLI —
-so it fits equally well as an independent service or as a library wired inside
-your existing application.
+**DocVault** is a git-backed document vault for structured and binary data.
+Every write is a git commit; every document has a full, auditable revision
+history; any document can be retrieved exactly as it was at any point in time.
 
 ## Core concepts
 
 | Concept | Description |
 |---------|-------------|
-| **Document** | Arbitrary JSON (or any text file) stored with auto-generated metadata: `id`, `creator`, `created_at`, `updated_at`, `summary`, `keywords`. Every create, update, and delete produces a git commit. |
-| **Template** | A named folder-structure blueprint made up of named *slots*. Each slot can carry a JSON Schema that validates documents on write. Templates can be bootstrapped from a local directory — any file type is supported. |
-| **Template export / deploy** | A template and all its slot documents can be packaged into a zip archive and extracted to any local path, preserving original file names and extensions. |
-| **Vault versioning** | The vault carries a semantic version (`major.minor.patch`). Bumping the version creates a git tag — a permanent, addressable snapshot of the entire document collection. |
-| **Summarization** | On-demand or automatic LLM inference (Claude) that fills in `summary` and `keywords` from document content. Requires an Anthropic API key. |
+| **Document** | JSON or binary data stored with auto-generated metadata: `id`, `creator`, `created_at`, `updated_at`, `summary`, `keywords`. Every write produces a git commit. |
+| **Store** | A named, versioned sub-vault that organises documents logically. Stores can be nested and can define optional slot schemas. Without a store, documents are free-floating in the root vault. |
+| **Locked store** | A store created with `locked=true` only accepts bulk updates via `deploy`; individual document updates are rejected. |
+| **Vault versioning** | The vault carries a semantic version (`major.minor.patch`). Bumping creates a git tag — a permanent snapshot of the entire collection. |
+| **Summarization** | On-demand or automatic LLM inference (Claude) that fills `summary` and `keywords` from document content. |
 | **Point-in-time retrieval** | Fetch any document at any git ref: commit SHA, tag, or branch name. |
 
 ## Deployment models
 
-**Standalone server** — run `docvault serve` and interact over HTTP. All
-endpoints are documented in this Swagger UI.
+**Standalone server** — run `docvault serve` and interact over HTTP.
 
-**Embedded shim** — mount DocVault inside your own FastAPI app with two lines:
+**Embedded shim** — mount DocVault inside your own FastAPI app:
 
 ```python
 shim = DocVaultShim(VaultConfig(vault_path="./vault"))
 app = FastAPI(lifespan=shim.wrap_lifespan())
 app.include_router(shim.router)
 ```
-
-All DocVault routes are namespaced under a configurable prefix (default
-`/api/v1`) and never collide with your own routes.
 
 ## Authentication
 
@@ -53,47 +45,34 @@ All DocVault routes are namespaced under a configurable prefix (default
 | `none` | Open access — for local development. |
 | `api_key` | Static keys checked via `X-API-Key` header. |
 | `passthrough` | Delegate to your host app's own auth dependency. |
-
-## Interactive testing
-
-Use the **Authorize** button above to set your API key when
-`auth_mode = api_key`, then expand any endpoint and click **Try it out**.
-
-## Generating the OpenAPI spec
-
-```bash
-task openapi   # writes docs/openapi.json without a running server
-```
 """
 
 _TAGS_METADATA = [
-    {
-        "name": "Health",
-        "description": "Liveness probe — no authentication required.",
-    },
+    {"name": "Health", "description": "Liveness probe — no authentication required."},
     {
         "name": "Documents",
         "description": (
-            "Full CRUD for JSON documents plus commit history, point-in-time retrieval, "
-            "and on-demand LLM summarization."
+            "Full CRUD for root-level (free-floating) documents plus commit history, "
+            "point-in-time retrieval, and on-demand LLM summarization."
         ),
     },
     {
-        "name": "Templates",
-        "description": "Named JSON Schema definitions used to validate and default-fill documents.",
+        "name": "Stores",
+        "description": (
+            "Named sub-vaults that organise documents into structured, versioned namespaces. "
+            "Each store can define optional slot schemas and may be locked to bulk-only updates."
+        ),
     },
     {
         "name": "Vault",
         "description": (
             "Vault-level metadata and semantic versioning. "
-            "Bump the version to create a git tag snapshot of the collection."
+            "Bump the version to create a git tag snapshot."
         ),
     },
     {
         "name": "Summarization",
-        "description": (
-            "LLM-powered metadata inference. Requires `llm_api_key` in the vault config."
-        ),
+        "description": "LLM-powered metadata inference. Requires `llm_api_key` in the vault config.",
     },
 ]
 
@@ -129,28 +108,18 @@ def create_app(
 
 
 def create_mountable_router(
-    store: DocVault,
+    vault: DocVault,
     passthrough_dep: Callable[..., Any] | None = None,
     prefix: str = "/docvault",
 ):
-    """Return an APIRouter for an already-initialised store.
+    """Return an APIRouter for an already-initialised vault.
 
-    .. note::
-        Prefer :class:`~docvault.api.shim.DocVaultShim` for new integrations —
-        it owns the store lifecycle and composes cleanly with FastAPI's lifespan.
-
-    Usage::
-
-        app = FastAPI()
-        store = DocVault(config)
-        await store.init()           # caller manages lifecycle
-        app.include_router(
-            create_mountable_router(store, passthrough_dep=my_auth_dep)
-        )
+    Prefer :class:`~docvault.api.shim.DocVaultShim` for new integrations —
+    it owns the vault lifecycle and composes cleanly with FastAPI's lifespan.
     """
     from .auth import build_auth_dep
     from .router import create_router
 
     return create_router(
-        store, build_auth_dep(store.config, passthrough_dep), prefix=prefix
+        vault, build_auth_dep(vault.config, passthrough_dep), prefix=prefix
     )

@@ -1,11 +1,12 @@
+# Future imports (must occur at the beginning of the file):
 from __future__ import annotations
 
+# Standard library imports:
 import json
 from pathlib import Path
 
-
+# Local imports:
 from docvault.config import AuthMode, VaultConfig, load_config
-
 
 # ---------------------------------------------------------------------------
 # AuthMode enum
@@ -105,6 +106,7 @@ class TestGenerateApiKey:
         cfg = VaultConfig(vault_path=tmp_path)
         key = cfg.generate_api_key()
         # urlsafe base64 uses A-Z, a-z, 0-9, -, _
+        # Standard library imports:
         import re
 
         assert re.fullmatch(r"[A-Za-z0-9_\-]+", key), f"Non-urlsafe chars in {key!r}"

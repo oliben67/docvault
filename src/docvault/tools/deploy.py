@@ -7,25 +7,23 @@ from pathlib import Path
 import httpx
 
 
-def deploy_template(
-    template_id: str,
+def deploy_store(
+    store_name: str,
     target_path: Path | str,
     base_url: str = "http://localhost:8000",
     api_key: str | None = None,
     *,
     overwrite: bool = False,
 ) -> list[Path]:
-    """Download a DocVault template export and extract it to *target_path*.
+    """Download a DocVault store export and extract it to *target_path*.
 
     Parameters
     ----------
-    template_id:
-        The template's name or its full content-addressed ID
-        (``{name}/v{version}/{hash}``).  Only the ``name`` prefix is used
-        when calling the API, so both forms are accepted.
+    store_name:
+        The store's name.
     target_path:
-        Local directory where the template files will be written.  The
-        directory is created if it does not already exist.
+        Local directory where the store's files will be written.
+        The directory is created if it does not already exist.
     base_url:
         Base URL of the running DocVault server (no trailing slash needed).
     api_key:
@@ -43,28 +41,24 @@ def deploy_template(
     Raises
     ------
     httpx.HTTPStatusError
-        If the server returns a non-2xx response (e.g. 404 template not found,
-        401 authentication failure).
+        If the server returns a non-2xx response (e.g. 404 store not found).
     ValueError
         If a zip entry would escape *target_path* (zip-slip protection).
 
     Examples
     --------
-    Basic usage (no auth)::
+    Basic usage::
 
-        from docvault.tools import deploy_template
+        from docvault.tools import deploy_store
         from pathlib import Path
 
-        files = deploy_template(
-            "microservice",
-            target_path=Path("/srv/config"),
-        )
+        files = deploy_store("microservice", target_path=Path("/srv/config"))
         print(f"Deployed {len(files)} file(s)")
 
     With API key::
 
-        files = deploy_template(
-            "microservice/v1.0.0/abc123...",
+        files = deploy_store(
+            "microservice",
             target_path="/srv/config",
             base_url="https://vault.internal",
             api_key="sk-...",
@@ -73,34 +67,27 @@ def deploy_template(
     target = Path(target_path).expanduser().resolve()
     target.mkdir(parents=True, exist_ok=True)
 
-    # Accept both "name" and "name/v.../hash" forms.
-    name = template_id.split("/")[0]
-
     headers: dict[str, str] = {}
     if api_key:
         headers["X-API-Key"] = api_key
 
-    url = f"{base_url.rstrip('/')}/api/v1/templates/{name}/export"
+    url = f"{base_url.rstrip('/')}/api/v1/stores/{store_name}/export"
     response = httpx.get(url, headers=headers, follow_redirects=True)
     response.raise_for_status()
 
     extracted: list[Path] = []
     with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
         for entry in zf.namelist():
-            if entry == "_template.json":
+            if entry == "_store.json":
                 continue
-            # Zip-slip protection: resolve and verify the destination stays
-            # inside target_path before writing anything to disk.
             dest = (target / entry).resolve()
             if not str(dest).startswith(str(target)):
                 raise ValueError(
                     f"Zip entry {entry!r} would escape the target directory — "
                     "archive may be malicious"
                 )
-
             if not overwrite and dest.exists():
                 continue
-
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(zf.read(entry))
             extracted.append(dest)

@@ -1,13 +1,17 @@
+# Future imports (must occur at the beginning of the file):
 from __future__ import annotations
 
+# Standard library imports:
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
+# Third party imports:
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+# Local imports:
 from docvault.api import DocVaultShim
 from docvault.config import VaultConfig
 from tests.conftest import asgi_lifespan_client
@@ -93,6 +97,7 @@ async def test_pattern_startup_direct(config: VaultConfig):
 
 
 async def test_custom_auth_dep_blocks_request(config: VaultConfig):
+    # Third party imports:
     from fastapi import HTTPException
 
     async def deny_all() -> dict[str, Any]:

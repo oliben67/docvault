@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class DocumentMeta(BaseModel):
@@ -15,9 +15,10 @@ class DocumentMeta(BaseModel):
     summary: str = ""
     keywords: list[str] = Field(default_factory=list)
     size_bytes: int = 0
-    template: str | None = None
     path: str | None = None
     named_version: str | None = None
+    is_binary: bool = False
+    mime_type: str | None = None
 
 
 class Document(BaseModel):
@@ -40,7 +41,6 @@ class CreateDocInput(BaseModel):
                 "creator": "alice",
                 "summary": "Application configuration for the API service",
                 "keywords": ["config", "api"],
-                "template": "microservice",
                 "path": "config/app",
                 "named_version": None,
                 "commit_message": None,
@@ -48,14 +48,24 @@ class CreateDocInput(BaseModel):
         }
     )
 
-    content: dict[str, Any]
+    content: dict[str, Any] = Field(default_factory=dict)
+    binary_content: bytes | None = None
+    mime_type: str | None = None
     creator: str | None = None
     summary: str = ""
     keywords: list[str] = Field(default_factory=list)
-    template: str | None = None
     path: str | None = None
     named_version: str | None = None
     commit_message: str | None = None
+
+    @model_validator(mode="after")
+    def _check_binary(self) -> "CreateDocInput":
+        if self.binary_content is not None:
+            if self.content:
+                raise ValueError("'content' and 'binary_content' are mutually exclusive")
+            if self.mime_type is None:
+                raise ValueError("'mime_type' is required when 'binary_content' is set")
+        return self
 
 
 class UpdateDocInput(BaseModel):
@@ -71,8 +81,16 @@ class UpdateDocInput(BaseModel):
         }
     )
 
-    content: dict[str, Any]
+    content: dict[str, Any] | None = None
+    binary_content: bytes | None = None
+    mime_type: str | None = None
     summary: str | None = None
     keywords: list[str] | None = None
     named_version: str | None = None
     commit_message: str | None = None
+
+    @model_validator(mode="after")
+    def _check_binary(self) -> "UpdateDocInput":
+        if self.binary_content is not None and self.content is not None:
+            raise ValueError("'content' and 'binary_content' are mutually exclusive")
+        return self

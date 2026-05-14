@@ -1,8 +1,11 @@
+# Future imports (must occur at the beginning of the file):
 from __future__ import annotations
 
+# Standard library imports:
 from collections.abc import Callable
 from typing import Any
 
+# Third party imports:
 from fastapi import HTTPException, Security, status
 from fastapi.security import APIKeyHeader
 

@@ -1,6 +1,7 @@
+# Future imports (must occur at the beginning of the file):
 from __future__ import annotations
 
-
+# Local imports:
 from docvault.core.vault_meta import VaultMeta, VaultVersion
 
 
@@ -106,6 +107,7 @@ class TestVaultMeta:
         assert m2.version == m.version
 
     def test_timestamps_are_utc(self):
+        # Standard library imports:
         from datetime import timezone
 
         m = VaultMeta(name="tz-test")

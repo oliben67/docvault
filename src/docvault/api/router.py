@@ -13,25 +13,25 @@ from ..core.document import (
     DocumentMeta,
     UpdateDocInput,
 )
-from ..core.vault_meta import VaultMeta
-from ..core.store import DocVault
-from ..core.template import (
-    DeployVaultInput,
-    Template,
-    TemplateCreateInput,
-    TemplateRef,
-    TemplateValidation,
+from ..core.vault import DocVault
+from ..core.store import (
+    DeployStoreInput,
+    StoreMeta,
+    StoreCreateInput,
+    StoreRef,
+    StoreValidation,
 )
+from ..core.vault_meta import VaultMeta
 from ..exceptions import (
     DocumentNotFoundError,
     SummarizationError,
-    TemplateNotFoundError,
-    TemplateValidationError,
+    StoreNotFoundError,
+    StoreValidationError,
 )
 
 
 def create_router(
-    store: DocVault,
+    vault: DocVault,
     auth_dep: Callable,
     prefix: str = "/api/v1",
 ) -> APIRouter:
@@ -49,80 +49,68 @@ def create_router(
         """Returns `{"status": "ok"}` unconditionally. No authentication required."""
         return {"status": "ok"}
 
-    # ── Documents ──────────────────────────────────────────────────────────
+    # ── Documents (root-level, free-floating) ──────────────────────────────
 
     @router.get(
         "/docs",
         response_model=list[DocumentMeta],
         tags=["Documents"],
-        summary="List documents",
+        summary="List root documents",
         response_description="Array of document metadata records, newest first",
     )
     async def list_docs(
         keywords: str | None = None,
         creator: str | None = None,
-        template: str | None = None,
         _p: Any = Depends(auth_dep),
     ) -> list[DocumentMeta]:
-        """List metadata for all documents.
+        """List metadata for all free-floating (root-level) documents.
 
         Results are sorted newest-first. All filters are AND-combined.
 
         - **keywords** — comma-separated list; only documents that have *all* listed
           keywords (case-insensitive) are returned.
         - **creator** — exact match on the creator field.
-        - **template** — exact match on the template name.
+
+        Documents stored inside a :class:`~docvault.core.vault.Store` are accessed
+        via ``GET /stores/{name}/docs``.
         """
         kw_list = [k.strip() for k in keywords.split(",")] if keywords else None
-        return await store.list_docs(
-            keywords=kw_list, creator=creator, template=template
-        )
+        return await vault.list_docs(keywords=kw_list, creator=creator)
 
     @router.post(
         "/docs",
         response_model=Document,
         status_code=status.HTTP_201_CREATED,
         tags=["Documents"],
-        summary="Create a document",
+        summary="Create a root document",
         response_description="The newly created document including generated metadata",
-        responses={
-            404: {"description": "Named template not found"},
-            422: {"description": "Content violates the template's JSON Schema"},
-        },
     )
     async def create_doc(inp: CreateDocInput, _p: Any = Depends(auth_dep)) -> Document:
-        """Create a new document and commit it to the vault.
+        """Create a new free-floating document and commit it to the vault.
 
-        If **creator** is omitted, the authenticated user (or the shim's `app_name`)
-        is used automatically.
-
-        If **template** is set the content is validated against that template's JSON
-        Schema and any declared defaults are merged in first.
-
-        If `auto_summarize` is enabled in the vault config and no **summary** is
-        provided, the LLM is called to infer a summary and keywords automatically.
+        If **creator** is omitted the authenticated user is used automatically.
+        If `auto_summarize` is enabled and no **summary** is provided, the LLM
+        infers summary and keywords.
         """
         if not inp.creator:
             inp = inp.model_copy(update={"creator": _p.get("user", "anonymous")})
         try:
-            return await store.create_doc(inp)
-        except TemplateNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except TemplateValidationError as exc:
+            return await vault.create_doc(inp)
+        except StoreValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.get(
         "/docs/{doc_id}",
         response_model=Document,
         tags=["Documents"],
-        summary="Get a document",
+        summary="Get a root document",
         response_description="Document with metadata and content",
         responses={404: {"description": "Document not found"}},
     )
     async def get_doc(doc_id: str, _p: Any = Depends(auth_dep)) -> Document:
-        """Fetch the current content and metadata for a single document."""
+        """Fetch the current content and metadata for a single root document."""
         try:
-            return await store.get_doc(doc_id)
+            return await vault.get_doc(doc_id)
         except DocumentNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -130,43 +118,30 @@ def create_router(
         "/docs/{doc_id}",
         response_model=Document,
         tags=["Documents"],
-        summary="Replace a document's content",
+        summary="Replace a root document's content",
         response_description="Document after update",
-        responses={
-            404: {"description": "Document not found"},
-            422: {"description": "Content violates the template's JSON Schema"},
-        },
+        responses={404: {"description": "Document not found"}},
     )
     async def update_doc(
         doc_id: str, inp: UpdateDocInput, _p: Any = Depends(auth_dep)
     ) -> Document:
-        """Replace the entire content of an existing document.
-
-        Omit **summary** or **keywords** to keep the existing values.
-        Providing an empty string for **summary** clears it.
-        """
+        """Replace the entire content of an existing root document."""
         try:
-            return await store.update_doc(doc_id, inp)
+            return await vault.update_doc(doc_id, inp)
         except DocumentNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except TemplateValidationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.delete(
         "/docs/{doc_id}",
         status_code=status.HTTP_204_NO_CONTENT,
         tags=["Documents"],
-        summary="Delete a document",
+        summary="Delete a root document",
         responses={404: {"description": "Document not found"}},
     )
     async def delete_doc(doc_id: str, _p: Any = Depends(auth_dep)) -> None:
-        """Permanently delete a document from the vault.
-
-        The deletion is recorded as a git commit, so the document remains
-        recoverable via `GET /docs/{id}/at/{ref}` using a historical commit SHA.
-        """
+        """Permanently delete a document. The deletion is recorded as a git commit."""
         try:
-            await store.delete_doc(doc_id)
+            await vault.delete_doc(doc_id)
         except DocumentNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -175,19 +150,14 @@ def create_router(
         response_model=list[CommitInfo],
         tags=["Documents"],
         summary="Document commit history",
-        response_description="List of commits that touched this document, newest first",
         responses={404: {"description": "Document not found"}},
     )
     async def doc_history(
         doc_id: str, max_count: int = 50, _p: Any = Depends(auth_dep)
     ) -> list[CommitInfo]:
-        """Return the git commit log for a single document.
-
-        Each entry includes the commit SHA (use it with `GET /docs/{id}/at/{ref}`),
-        author, timestamp, and message.
-        """
+        """Return the git commit log for a single document."""
         try:
-            return await store.get_doc_history(doc_id, max_count=max_count)
+            return await vault.get_doc_history(doc_id, max_count=max_count)
         except DocumentNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -196,19 +166,14 @@ def create_router(
         response_model=Document,
         tags=["Documents"],
         summary="Get a document at a historical git ref",
-        response_description="Document as it existed at the given ref",
         responses={404: {"description": "Document or ref not found"}},
     )
     async def doc_at_ref(
         doc_id: str, ref: str, _p: Any = Depends(auth_dep)
     ) -> Document:
-        """Retrieve a point-in-time snapshot of a document.
-
-        **ref** can be any git ref: a full or abbreviated commit SHA, a tag name,
-        or a branch name. Use `GET /docs/{id}/history` to discover valid SHAs.
-        """
+        """Retrieve a point-in-time snapshot of a document."""
         try:
-            return await store.get_doc_at_ref(doc_id, ref)
+            return await vault.get_doc_at_ref(doc_id, ref)
         except DocumentNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -217,24 +182,17 @@ def create_router(
         response_model=Document,
         tags=["Documents", "Summarization"],
         summary="Infer summary and keywords via LLM",
-        response_description="Document with updated summary and keywords",
         responses={
             404: {"description": "Document not found"},
             503: {"description": "LLM not configured or call failed"},
         },
     )
     async def summarize_doc(
-        doc_id: str,
-        overwrite: bool = False,
-        _p: Any = Depends(auth_dep),
+        doc_id: str, overwrite: bool = False, _p: Any = Depends(auth_dep)
     ) -> Document:
-        """Call the LLM to generate a summary and keyword list for a document.
-
-        Skips documents that already have a summary unless **overwrite=true**.
-        Requires `llm_api_key` to be set in the vault configuration.
-        """
+        """Call the LLM to generate a summary and keyword list for a document."""
         try:
-            return await store.summarize_doc(doc_id, overwrite=overwrite)
+            return await vault.summarize_doc(doc_id, overwrite=overwrite)
         except DocumentNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except SummarizationError as exc:
@@ -245,136 +203,318 @@ def create_router(
         response_model=list[Document],
         tags=["Documents", "Summarization"],
         summary="Infer metadata for all un-summarized documents",
-        response_description="Documents that were updated",
         responses={503: {"description": "LLM not configured or call failed"}},
     )
     async def summarize_all(
         overwrite: bool = False, _p: Any = Depends(auth_dep)
     ) -> list[Document]:
-        """Run LLM inference on every document that is missing a summary.
-
-        Pass **overwrite=true** to re-run inference on documents that already
-        have a summary. Only updated documents are returned.
-        """
+        """Run LLM inference on every root document that is missing a summary."""
         try:
-            return await store.summarize_all(overwrite=overwrite)
+            return await vault.summarize_all(overwrite=overwrite)
         except SummarizationError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    # ── Templates ──────────────────────────────────────────────────────────
+    # ── Stores ─────────────────────────────────────────────────────────────
 
     @router.get(
-        "/templates",
-        response_model=list[Template],
-        tags=["Templates"],
-        summary="List templates",
-        response_description="All registered templates",
+        "/stores",
+        response_model=list[StoreMeta],
+        tags=["Stores"],
+        summary="List stores",
+        response_description="All registered stores in this vault",
     )
-    async def list_templates(_p: Any = Depends(auth_dep)) -> list[Template]:
-        """Return all templates stored in the vault."""
-        return await store.list_templates()
+    async def list_stores(_p: Any = Depends(auth_dep)) -> list[StoreMeta]:
+        """Return metadata for all stores in this vault."""
+        return await vault.list_stores()
 
     @router.post(
-        "/templates",
-        response_model=TemplateRef,
+        "/stores",
+        response_model=StoreRef,
         status_code=status.HTTP_201_CREATED,
-        tags=["Templates"],
-        summary="Create a template",
-        response_description="Name and ID of the created template",
+        tags=["Stores"],
+        summary="Create a store",
+        response_description="Name and ID of the created store",
         responses={
             422: {
                 "description": "A slot's json_schema is not a valid JSON Schema draft-7"
             }
         },
     )
-    async def create_template(
-        inp: TemplateCreateInput, _p: Any = Depends(auth_dep)
-    ) -> TemplateRef:
-        """Register a new template and return its name and ID.
+    async def create_store(
+        inp: StoreCreateInput, _p: Any = Depends(auth_dep)
+    ) -> StoreRef:
+        """Register or update a store and return its name and ID.
 
-        **structure** maps slot paths to :class:`DocSlot` definitions.
+        **structure** maps slot paths to :class:`~docvault.core.store.DocSlot` definitions.
 
-        **path** (optional server-side filesystem path) may point to a folder
-        (scans all files recursively) or a single file (creates one flat slot).
-        LLM summarization is applied to each ingested document when configured.
+        **locked** (optional, default false) — when true, documents in this store can
+        only be updated via the batch ``deploy`` method; individual ``PUT /stores/{name}/docs/{id}``
+        calls are rejected.
 
-        Use the returned **id** for all subsequent operations on this template.
+        If a store with the same name already exists and the structure is identical
+        (same content hash) the call is a no-op and returns the existing ref.
+        A changed structure increments the version counter.
         """
-        return await store.create_template(inp, creator=_p.get("user"))
+        store_obj = await vault.create_store(inp, creator=_p.get("user"))
+        meta = await store_obj.get_meta()
+        return StoreRef(name=meta.name, id=meta.id)
 
     @router.get(
-        "/templates/{template_id}",
-        response_model=Template,
-        tags=["Templates"],
-        summary="Get a template",
-        response_description="Template definition including the full slot structure",
-        responses={404: {"description": "Template not found"}},
+        "/stores/{store_name}",
+        response_model=StoreMeta,
+        tags=["Stores"],
+        summary="Get a store",
+        response_description="Store metadata including structure and version",
+        responses={404: {"description": "Store not found"}},
     )
-    async def get_template(template_id: str, _p: Any = Depends(auth_dep)) -> Template:
-        """Fetch a single template by its ID."""
+    async def get_store(store_name: str, _p: Any = Depends(auth_dep)) -> StoreMeta:
+        """Fetch a store's metadata by name."""
         try:
-            return await store.get_template(template_id)
-        except TemplateNotFoundError as exc:
+            store_obj = await vault.get_store(store_name)
+            return await store_obj.get_meta()
+        except StoreNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @router.get(
-        "/templates/{template_id}/validate",
-        response_model=TemplateValidation,
-        tags=["Templates"],
-        summary="Validate template structure against the vault",
-        response_description="Which required slots are satisfied, missing, or have unexpected documents",
-        responses={404: {"description": "Template not found"}},
+        "/stores/{store_name}/validate",
+        response_model=StoreValidation,
+        tags=["Stores"],
+        summary="Validate store slot coverage",
+        responses={404: {"description": "Store not found"}},
     )
-    async def validate_template(
-        template_id: str, _p: Any = Depends(auth_dep)
-    ) -> TemplateValidation:
-        """Check whether all required slots in the template are occupied by vault documents."""
+    async def validate_store(
+        store_name: str, _p: Any = Depends(auth_dep)
+    ) -> StoreValidation:
+        """Check whether all required slots in the store are occupied by documents."""
         try:
-            return await store.validate_template(template_id)
-        except TemplateNotFoundError as exc:
+            return await vault.validate_store(store_name)
+        except StoreNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @router.get(
-        "/templates/{template_id}/export",
-        tags=["Templates"],
-        summary="Export template as a zip archive",
-        response_description=(
-            "Zip file containing _template.json plus each slot document "
-            "at its slot path (e.g. config/app.json)"
-        ),
+        "/stores/{store_name}/export",
+        tags=["Stores"],
+        summary="Export store as a zip archive",
         responses={
             200: {"content": {"application/zip": {}}, "description": "Zip archive"},
-            404: {"description": "Template not found"},
+            404: {"description": "Store not found"},
         },
     )
-    async def export_template(
-        template_id: str, _p: Any = Depends(auth_dep)
+    async def export_store(
+        store_name: str, _p: Any = Depends(auth_dep)
     ) -> Response:
-        """Download the template and all its slot documents as a zip archive."""
+        """Download the store's metadata and all its documents as a zip archive."""
         try:
-            zip_bytes = await store.export_template_zip(template_id)
-            tpl = await store.get_template(template_id)
-        except TemplateNotFoundError as exc:
+            zip_bytes = await vault.export_store_zip(store_name)
+        except StoreNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return Response(
             content=zip_bytes,
             media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{tpl.name}.zip"'},
+            headers={
+                "Content-Disposition": f'attachment; filename="{store_name}.zip"'
+            },
         )
 
     @router.delete(
-        "/templates/{template_id}",
+        "/stores/{store_name}",
         status_code=status.HTTP_204_NO_CONTENT,
-        tags=["Templates"],
-        summary="Delete a template",
-        responses={404: {"description": "Template not found"}},
+        tags=["Stores"],
+        summary="Delete a store",
+        responses={404: {"description": "Store not found"}},
     )
-    async def delete_template(template_id: str, _p: Any = Depends(auth_dep)) -> None:
-        """Delete a template. Existing documents that reference this template are unaffected."""
+    async def delete_store(store_name: str, _p: Any = Depends(auth_dep)) -> None:
+        """Delete a store and all its documents."""
         try:
-            await store.delete_template(template_id)
-        except TemplateNotFoundError as exc:
+            await vault.delete_store(store_name)
+        except StoreNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # ── Store documents ────────────────────────────────────────────────────
+
+    @router.get(
+        "/stores/{store_name}/docs",
+        response_model=list[DocumentMeta],
+        tags=["Stores", "Documents"],
+        summary="List documents in a store",
+        responses={404: {"description": "Store not found"}},
+    )
+    async def list_store_docs(
+        store_name: str,
+        keywords: str | None = None,
+        creator: str | None = None,
+        _p: Any = Depends(auth_dep),
+    ) -> list[DocumentMeta]:
+        """List all documents in a named store."""
+        try:
+            store_obj = await vault.get_store(store_name)
+        except StoreNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        kw_list = [k.strip() for k in keywords.split(",")] if keywords else None
+        return await store_obj.list_docs(keywords=kw_list, creator=creator)
+
+    @router.post(
+        "/stores/{store_name}/docs",
+        response_model=Document,
+        status_code=status.HTTP_201_CREATED,
+        tags=["Stores", "Documents"],
+        summary="Create a document in a store",
+        responses={
+            404: {"description": "Store not found"},
+            422: {"description": "Content violates the store's slot JSON Schema"},
+        },
+    )
+    async def create_store_doc(
+        store_name: str, inp: CreateDocInput, _p: Any = Depends(auth_dep)
+    ) -> Document:
+        """Create a document inside a named store."""
+        if not inp.creator:
+            inp = inp.model_copy(update={"creator": _p.get("user", "anonymous")})
+        try:
+            store_obj = await vault.get_store(store_name)
+            return await store_obj.create_doc(inp)
+        except StoreNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except StoreValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.get(
+        "/stores/{store_name}/docs/{doc_id}",
+        response_model=Document,
+        tags=["Stores", "Documents"],
+        summary="Get a document in a store",
+        responses={404: {"description": "Store or document not found"}},
+    )
+    async def get_store_doc(
+        store_name: str, doc_id: str, _p: Any = Depends(auth_dep)
+    ) -> Document:
+        """Fetch a document from a named store."""
+        try:
+            store_obj = await vault.get_store(store_name)
+            return await store_obj.get_doc(doc_id)
+        except (StoreNotFoundError, DocumentNotFoundError) as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.put(
+        "/stores/{store_name}/docs/{doc_id}",
+        response_model=Document,
+        tags=["Stores", "Documents"],
+        summary="Update a document in a store",
+        responses={
+            404: {"description": "Store or document not found"},
+            422: {
+                "description": "Content violates the store's slot JSON Schema, "
+                "or store is locked"
+            },
+        },
+    )
+    async def update_store_doc(
+        store_name: str,
+        doc_id: str,
+        inp: UpdateDocInput,
+        _p: Any = Depends(auth_dep),
+    ) -> Document:
+        """Replace a document's content inside a named store.
+
+        Raises 422 if the store was created with ``locked=true``.
+        Use ``POST /stores/{name}/deploy`` to update locked stores.
+        """
+        try:
+            store_obj = await vault.get_store(store_name)
+            return await store_obj.update_doc(doc_id, inp)
+        except (StoreNotFoundError, DocumentNotFoundError) as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except StoreValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.delete(
+        "/stores/{store_name}/docs/{doc_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+        tags=["Stores", "Documents"],
+        summary="Delete a document in a store",
+        responses={
+            404: {"description": "Store or document not found"},
+            422: {"description": "Store is locked"},
+        },
+    )
+    async def delete_store_doc(
+        store_name: str, doc_id: str, _p: Any = Depends(auth_dep)
+    ) -> None:
+        """Delete a document from a named store."""
+        try:
+            store_obj = await vault.get_store(store_name)
+            await store_obj.delete_doc(doc_id)
+        except (StoreNotFoundError, DocumentNotFoundError) as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except StoreValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.get(
+        "/stores/{store_name}/docs/{doc_id}/history",
+        response_model=list[CommitInfo],
+        tags=["Stores", "Documents"],
+        summary="Document commit history (store)",
+        responses={404: {"description": "Store or document not found"}},
+    )
+    async def store_doc_history(
+        store_name: str,
+        doc_id: str,
+        max_count: int = 50,
+        _p: Any = Depends(auth_dep),
+    ) -> list[CommitInfo]:
+        """Return the git commit log for a document inside a store."""
+        try:
+            store_obj = await vault.get_store(store_name)
+            return await store_obj.get_doc_history(doc_id, max_count=max_count)
+        except (StoreNotFoundError, DocumentNotFoundError) as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.get(
+        "/stores/{store_name}/docs/{doc_id}/at/{ref}",
+        response_model=Document,
+        tags=["Stores", "Documents"],
+        summary="Get a store document at a historical git ref",
+        responses={404: {"description": "Store, document, or ref not found"}},
+    )
+    async def store_doc_at_ref(
+        store_name: str, doc_id: str, ref: str, _p: Any = Depends(auth_dep)
+    ) -> Document:
+        """Retrieve a point-in-time snapshot of a store document."""
+        try:
+            store_obj = await vault.get_store(store_name)
+            return await store_obj.get_doc_at_ref(doc_id, ref)
+        except (StoreNotFoundError, DocumentNotFoundError) as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.post(
+        "/stores/{store_name}/deploy",
+        response_model=list[Document],
+        status_code=status.HTTP_201_CREATED,
+        tags=["Stores"],
+        summary="Batch-deploy documents into a store",
+        responses={
+            404: {"description": "Store not found"},
+            422: {
+                "description": "One or more documents violate the store's slot JSON Schema"
+            },
+        },
+    )
+    async def deploy_store(
+        store_name: str, inp: DeployStoreInput, _p: Any = Depends(auth_dep)
+    ) -> list[Document]:
+        """Create multiple documents in a store in a single atomic git commit.
+
+        This is the correct way to update a ``locked`` store.
+        All documents are written and committed atomically; if any document
+        fails schema validation the entire batch is rejected.
+        """
+        try:
+            store_obj = await vault.get_store(store_name)
+            return await store_obj.deploy(inp.documents, commit_message=inp.commit_message)
+        except StoreNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except StoreValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # ── Vault metadata ─────────────────────────────────────────────────────
 
@@ -383,69 +523,32 @@ def create_router(
         response_model=VaultMeta,
         tags=["Vault"],
         summary="Get vault metadata",
-        response_description="Current vault name, version, and timestamps",
     )
     async def get_vault(_p: Any = Depends(auth_dep)) -> VaultMeta:
         """Return the vault's current metadata including the semantic version."""
-        return await store.get_vault()
+        return await vault.get_vault()
 
     @router.get(
         "/vault/versions",
         response_model=list[str],
         tags=["Vault"],
         summary="List vault version tags",
-        response_description="All git tags that begin with 'v'",
     )
     async def list_vault_versions(_p: Any = Depends(auth_dep)) -> list[str]:
         """Return all git tags that represent vault version snapshots (e.g. `v1.2.3`)."""
-        return await store.list_vault_versions()
+        return await vault.list_vault_versions()
 
     @router.post(
         "/vault/version/{bump_type}",
         response_model=VaultMeta,
         tags=["Vault"],
         summary="Bump the vault version",
-        response_description="Vault metadata after the version bump",
     )
     async def bump_vault_version(
         bump_type: Literal["major", "minor", "patch"],
         _p: Any = Depends(auth_dep),
     ) -> VaultMeta:
-        """Increment the vault's semantic version and create a git tag.
-
-        - `major` — resets minor and patch to 0 (e.g. 1.2.3 → 2.0.0)
-        - `minor` — resets patch to 0 (e.g. 1.2.3 → 1.3.0)
-        - `patch` — increments patch only (e.g. 1.2.3 → 1.2.4)
-        """
-        return await store.bump_vault_version(bump_type)
-
-    @router.post(
-        "/vault/deploy",
-        response_model=list[Document],
-        status_code=status.HTTP_201_CREATED,
-        tags=["Vault"],
-        summary="Batch-deploy documents from a template",
-        response_description="All created documents",
-        responses={
-            404: {"description": "Named template not found"},
-            422: {
-                "description": "One or more documents violate the template's JSON Schema"
-            },
-        },
-    )
-    async def deploy_vault(
-        inp: DeployVaultInput, _p: Any = Depends(auth_dep)
-    ) -> list[Document]:
-        """Create multiple documents in a single atomic git commit.
-
-        All documents in the batch are written together and committed atomically.
-        If any document fails schema validation the entire batch is rejected.
-        """
-        try:
-            return await store.deploy_vault(inp)
-        except TemplateNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except TemplateValidationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        """Increment the vault's semantic version and create a git tag."""
+        return await vault.bump_vault_version(bump_type)
 
     return router

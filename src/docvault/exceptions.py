@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 class DocVaultError(Exception):
     pass
 
@@ -10,11 +13,11 @@ class DocumentNotFoundError(DocVaultError):
     pass
 
 
-class TemplateNotFoundError(DocVaultError):
+class StoreNotFoundError(DocVaultError):
     pass
 
 
-class TemplateValidationError(DocVaultError):
+class StoreValidationError(DocVaultError):
     pass
 
 

@@ -1,9 +1,13 @@
+# Future imports (must occur at the beginning of the file):
 from __future__ import annotations
 
+# Standard library imports:
 from unittest.mock import AsyncMock, MagicMock, patch
 
+# Third party imports:
 import pytest
 
+# Local imports:
 from docvault.exceptions import SummarizationError
 
 
@@ -27,13 +31,17 @@ def _make_non_tool_response() -> MagicMock:
 
 class TestDocumentSummarizer:
     def test_import_error_raises_summarization_error(self, monkeypatch):
+        # Standard library imports:
         import sys
 
         # Temporarily hide the anthropic package
         real_anthropic = sys.modules.get("anthropic")
         sys.modules["anthropic"] = None  # type: ignore[assignment]
         try:
+            # Standard library imports:
             import importlib
+
+            # Local imports:
             import docvault.core.summarizer as mod
 
             importlib.reload(mod)
@@ -47,6 +55,7 @@ class TestDocumentSummarizer:
             importlib.reload(mod)
 
     def test_successful_infer_metadata(self):
+        # Local imports:
         from docvault.core.summarizer import DocumentSummarizer
 
         mock_response = _make_tool_response(
@@ -61,6 +70,7 @@ class TestDocumentSummarizer:
                 api_key="sk-test", model="claude-haiku-4-5-20251001"
             )
 
+        # Standard library imports:
         import asyncio
 
         summary, keywords = asyncio.run(
@@ -70,6 +80,7 @@ class TestDocumentSummarizer:
         assert keywords == ["config", "web", "service"]
 
     def test_content_truncation(self):
+        # Local imports:
         from docvault.core.summarizer import _MAX_CONTENT_CHARS, DocumentSummarizer
 
         captured_messages: list = []
@@ -87,6 +98,7 @@ class TestDocumentSummarizer:
         # Content larger than _MAX_CONTENT_CHARS
         large_content = {"data": "x" * (_MAX_CONTENT_CHARS + 5000)}
 
+        # Standard library imports:
         import asyncio
 
         asyncio.run(summarizer.infer_metadata(large_content))
@@ -97,6 +109,7 @@ class TestDocumentSummarizer:
         assert len(sent_text) < _MAX_CONTENT_CHARS + 500
 
     def test_api_failure_raises_summarization_error(self):
+        # Local imports:
         from docvault.core.summarizer import DocumentSummarizer
 
         async def fail_create(**kwargs):
@@ -108,12 +121,14 @@ class TestDocumentSummarizer:
         with patch("anthropic.AsyncAnthropic", return_value=mock_client):
             summarizer = DocumentSummarizer(api_key="sk-test")
 
+        # Standard library imports:
         import asyncio
 
         with pytest.raises(SummarizationError, match="LLM call failed"):
             asyncio.run(summarizer.infer_metadata({"key": "val"}))
 
     def test_no_tool_call_in_response_raises(self):
+        # Local imports:
         from docvault.core.summarizer import DocumentSummarizer
 
         mock_response = _make_non_tool_response()
@@ -123,6 +138,7 @@ class TestDocumentSummarizer:
         with patch("anthropic.AsyncAnthropic", return_value=mock_client):
             summarizer = DocumentSummarizer(api_key="sk-test")
 
+        # Standard library imports:
         import asyncio
 
         with pytest.raises(
@@ -131,6 +147,7 @@ class TestDocumentSummarizer:
             asyncio.run(summarizer.infer_metadata({"key": "val"}))
 
     def test_custom_model_passed_to_client(self):
+        # Local imports:
         from docvault.core.summarizer import DocumentSummarizer
 
         calls: list[dict] = []
@@ -145,12 +162,14 @@ class TestDocumentSummarizer:
         with patch("anthropic.AsyncAnthropic", return_value=mock_client):
             summarizer = DocumentSummarizer(api_key="sk-test", model="claude-opus-4")
 
+        # Standard library imports:
         import asyncio
 
         asyncio.run(summarizer.infer_metadata({"x": 1}))
         assert calls[0]["model"] == "claude-opus-4"
 
     def test_empty_content_does_not_crash(self):
+        # Local imports:
         from docvault.core.summarizer import DocumentSummarizer
 
         mock_client = MagicMock()
@@ -161,6 +180,7 @@ class TestDocumentSummarizer:
         with patch("anthropic.AsyncAnthropic", return_value=mock_client):
             summarizer = DocumentSummarizer(api_key="sk-test")
 
+        # Standard library imports:
         import asyncio
 
         summary, keywords = asyncio.run(summarizer.infer_metadata({}))
@@ -168,6 +188,7 @@ class TestDocumentSummarizer:
         assert isinstance(keywords, list)
 
     def test_keywords_returned_as_list(self):
+        # Local imports:
         from docvault.core.summarizer import DocumentSummarizer
 
         mock_client = MagicMock()
@@ -178,6 +199,7 @@ class TestDocumentSummarizer:
         with patch("anthropic.AsyncAnthropic", return_value=mock_client):
             summarizer = DocumentSummarizer(api_key="sk-test")
 
+        # Standard library imports:
         import asyncio
 
         _, keywords = asyncio.run(summarizer.infer_metadata({"v": 1}))

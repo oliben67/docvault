@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "py-docvault"
-version = "0.1.3"
+version = "0.2.0"
 description = "Git-backed document store with REST API, CLI, and FastAPI embedding — every write is a commit, every document has full revision history."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -104,6 +104,8 @@ target-version = "py310"
 fix = true
 
 [tool.ruff.lint]
+# Enable all of the rules in the "I" (isort) category by default.
+extend-select = ["I"]
 # Enable Pyflakes (`F`) and a subset of the pycodestyle (`E`) codes by default.
 # Unlike Flake8, Ruff doesn't enable pycodestyle warnings (`W`) or
 # McCabe complexity (`C901`) by default.
@@ -111,14 +113,11 @@ ignore = []
 # isort settings
 isort.force-sort-within-sections = false
 isort.required-imports = ["from __future__ import annotations"]
-# https://github.com/astral-sh/ruff/issues/6371
+# https://github.com/astrataskl-sh/ruff/issues/6371
 isort.import-heading.future = "Future imports (must occur at the beginning of the file):"
 isort.import-heading.standard-library = "Standard library imports:"
 isort.import-heading.third-party = "Third party imports:"
 isort.import-heading.first-party = "Local imports:"
-isort.extra-standard-library = ["pathlib", "packaging", "glob", "urllib"]
-isort.known-first-party = ["src"]
-isort.known-third-party = ["wandb", "pandas", "numpy"]
 isort.no-lines-before = ["local-folder"]
 isort.section-order = [
     "future",
@@ -138,6 +137,7 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 [tool.ruff.format]
 # Like Black, use double quotes for strings.
 quote-style = "double"
+
 
 # Like Black, indent with spaces, rather than tabs.
 indent-style = "space"

@@ -1,7 +1,10 @@
+# Future imports (must occur at the beginning of the file):
 from __future__ import annotations
 
+# Third party imports:
 import pytest
 
+# Local imports:
 from docvault.api.auth import build_auth_dep
 from docvault.config import AuthMode, VaultConfig
 
@@ -47,6 +50,7 @@ class TestAuthModeApiKey:
         assert result["user"].startswith("sk-12345")
 
     async def test_invalid_key_raises_401(self, tmp_path):
+        # Third party imports:
         from fastapi import HTTPException
 
         dep = build_auth_dep(self._api_cfg(tmp_path, ["valid-key"]))
@@ -55,6 +59,7 @@ class TestAuthModeApiKey:
         assert exc_info.value.status_code == 401
 
     async def test_missing_key_raises_401(self, tmp_path):
+        # Third party imports:
         from fastapi import HTTPException
 
         dep = build_auth_dep(self._api_cfg(tmp_path, ["valid-key"]))
@@ -63,6 +68,7 @@ class TestAuthModeApiKey:
         assert exc_info.value.status_code == 401
 
     async def test_empty_string_key_raises_401(self, tmp_path):
+        # Third party imports:
         from fastapi import HTTPException
 
         dep = build_auth_dep(self._api_cfg(tmp_path, ["valid-key"]))
@@ -78,6 +84,7 @@ class TestAuthModeApiKey:
             assert "user" in result
 
     async def test_error_detail_message(self, tmp_path):
+        # Third party imports:
         from fastapi import HTTPException
 
         dep = build_auth_dep(self._api_cfg(tmp_path, ["valid-key"]))
@@ -86,6 +93,7 @@ class TestAuthModeApiKey:
         assert "API key" in exc_info.value.detail
 
     async def test_www_authenticate_header(self, tmp_path):
+        # Third party imports:
         from fastapi import HTTPException
 
         dep = build_auth_dep(self._api_cfg(tmp_path, ["k"]))

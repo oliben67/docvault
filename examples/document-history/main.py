@@ -15,7 +15,7 @@ from pathlib import Path
 
 from docvault.config import VaultConfig
 from docvault.core.document import CreateDocInput, UpdateDocInput
-from docvault.core.store import DocVault
+from docvault.core.vault import DocVault
 
 
 async def main() -> None:

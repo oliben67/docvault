@@ -1,24 +1,28 @@
+# Future imports (must occur at the beginning of the file):
 from __future__ import annotations
 
+# Standard library imports:
 import asyncio
 
+# Third party imports:
 import pytest
 import pytest_asyncio
 
+# Local imports:
 from docvault.config import VaultConfig
 from docvault.core.document import CreateDocInput, UpdateDocInput
-from docvault.core.store import DocVault
-from docvault.core.template import (
+from docvault.core.vault import DocVault
+from docvault.core.store import (
     DeployDocSpec,
-    DeployVaultInput,
+    DeployStoreInput,
     DocSlot,
-    TemplateCreateInput,
+    StoreCreateInput,
 )
 from docvault.exceptions import (
     DocumentNotFoundError,
     SummarizationError,
-    TemplateNotFoundError,
-    TemplateValidationError,
+    StoreNotFoundError,
+    StoreValidationError,
     VaultNotFoundError,
 )
 
@@ -38,7 +42,6 @@ async def test_open_existing_vault(tmp_path):
     cfg = VaultConfig(vault_path=tmp_path / "vault")
     s = DocVault(cfg)
     await s.init()
-    # open() should work fine on an existing vault
     await s.open()
 
 
@@ -53,7 +56,7 @@ async def test_init_is_idempotent(tmp_path):
     cfg = VaultConfig(vault_path=tmp_path / "vault")
     s = DocVault(cfg)
     await s.init()
-    await s.init()  # second call must not raise
+    await s.init()
 
 
 # ── Document edge cases ───────────────────────────────────────────────────────
@@ -109,18 +112,52 @@ async def test_list_docs_empty_vault(store: DocVault):
     assert metas == []
 
 
-async def test_list_docs_template_filter(store: DocVault):
-    await store.create_template(TemplateCreateInput(name="tpl"))
-    doc_with = await store.create_doc(
-        CreateDocInput(content={"x": 1}, creator="alice", template="tpl")
+# ── Stores ────────────────────────────────────────────────────────────────────
+
+
+async def test_list_stores(store: DocVault):
+    await store.create_store(StoreCreateInput(name="alpha"))
+    await store.create_store(StoreCreateInput(name="beta"))
+    await store.create_store(StoreCreateInput(name="gamma"))
+    stores = await store.list_stores()
+    names = {s.name for s in stores}
+    assert {"alpha", "beta", "gamma"} == names
+
+
+async def test_get_store_nonexistent_raises(store: DocVault):
+    with pytest.raises(StoreNotFoundError):
+        await store.get_store("no-such-store")
+
+
+async def test_export_store_zip_nonexistent_raises(store: DocVault):
+    with pytest.raises(StoreNotFoundError):
+        await store.export_store_zip("no-such-store")
+
+
+async def test_deploy_store_schema_violation_raises(store: DocVault):
+    structure = {
+        "slot": DocSlot(
+            required=True,
+            json_schema={
+                "type": "object",
+                "required": ["name"],
+                "properties": {"name": {"type": "string"}},
+            },
+        )
+    }
+    await store.create_store(StoreCreateInput(name="strict", structure=structure))
+    inp = DeployStoreInput(
+        store_name="strict",
+        documents=[
+            DeployDocSpec(
+                path="slot",
+                content={"wrong_field": 123},
+                creator="bot",
+            )
+        ],
     )
-    doc_without = await store.create_doc(
-        CreateDocInput(content={"y": 2}, creator="alice")
-    )
-    metas = await store.list_docs(template="tpl")
-    ids = {m.id for m in metas}
-    assert doc_with.meta.id in ids
-    assert doc_without.meta.id not in ids
+    with pytest.raises(StoreValidationError):
+        await store.deploy_store(inp)
 
 
 # ── History ──────────────────────────────────────────────────────────────────
@@ -140,54 +177,6 @@ async def test_get_doc_at_ref_invalid_raises(store: DocVault):
         await store.get_doc_at_ref(doc.meta.id, "deadbeefdeadbeef")
 
 
-# ── Templates ────────────────────────────────────────────────────────────────
-
-
-async def test_list_templates(store: DocVault):
-    await store.create_template(TemplateCreateInput(name="alpha"))
-    await store.create_template(TemplateCreateInput(name="beta"))
-    await store.create_template(TemplateCreateInput(name="gamma"))
-    templates = await store.list_templates()
-    names = {t.name for t in templates}
-    assert {"alpha", "beta", "gamma"} == names
-
-
-async def test_get_template_nonexistent_raises(store: DocVault):
-    with pytest.raises(TemplateNotFoundError):
-        await store.get_template("no-such-template")
-
-
-async def test_export_template_zip_nonexistent_raises(store: DocVault):
-    with pytest.raises(TemplateNotFoundError):
-        await store.export_template_zip("no-such-template")
-
-
-async def test_deploy_vault_schema_violation_raises(store: DocVault):
-    structure = {
-        "slot": DocSlot(
-            required=True,
-            json_schema={
-                "type": "object",
-                "required": ["name"],
-                "properties": {"name": {"type": "string"}},
-            },
-        )
-    }
-    await store.create_template(TemplateCreateInput(name="strict", structure=structure))
-    inp = DeployVaultInput(
-        template_name="strict",
-        documents=[
-            DeployDocSpec(
-                path="slot",
-                content={"wrong_field": 123},
-                creator="bot",
-            )
-        ],
-    )
-    with pytest.raises(TemplateValidationError):
-        await store.deploy_vault(inp)
-
-
 # ── Vault version ─────────────────────────────────────────────────────────────
 
 
@@ -196,7 +185,6 @@ async def test_bump_vault_version_patch(store: DocVault):
     assert str(vault.version) == "0.1.0"
     bumped = await store.bump_vault_version("patch")
     assert str(bumped.version) == "0.1.1"
-    # major/minor unchanged
     assert bumped.version.major == 0
     assert bumped.version.minor == 1
 
@@ -217,7 +205,7 @@ async def test_concurrent_creates_all_succeed(store: DocVault):
     inputs = [CreateDocInput(content={"i": i}, creator="bot") for i in range(15)]
     docs = await asyncio.gather(*[store.create_doc(inp) for inp in inputs])
     ids = {d.meta.id for d in docs}
-    assert len(ids) == 15  # all unique
+    assert len(ids) == 15
 
 
 async def test_concurrent_updates_all_succeed(store: DocVault):
@@ -225,6 +213,5 @@ async def test_concurrent_updates_all_succeed(store: DocVault):
     updates = [UpdateDocInput(content={"v": i}) for i in range(1, 8)]
     results = await asyncio.gather(*[store.update_doc(doc.meta.id, u) for u in updates])
     assert len(results) == 7
-    # Final state should be one of the updates
     final = await store.get_doc(doc.meta.id)
     assert "v" in final.content

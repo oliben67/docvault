@@ -1,11 +1,14 @@
+# Future imports (must occur at the beginning of the file):
 from __future__ import annotations
 
+# Standard library imports:
 import json
 from typing import Any
 
 from ..exceptions import SummarizationError
 
 try:
+    # Third party imports:
     import anthropic
 
     _HAS_ANTHROPIC = True

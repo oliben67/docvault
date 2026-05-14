@@ -1,17 +1,21 @@
+# Future imports (must occur at the beginning of the file):
 from __future__ import annotations
 
+# Standard library imports:
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
+# Third party imports:
 import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+# Local imports:
 from docvault.api.app import create_app
 from docvault.config import VaultConfig
-from docvault.core.store import DocVault
+from docvault.core.vault import DocVault
 
 
 @asynccontextmanager

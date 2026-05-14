@@ -1,11 +1,14 @@
+# Future imports (must occur at the beginning of the file):
 from __future__ import annotations
 
+# Third party imports:
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+# Local imports:
 from docvault.api.app import create_app
 from docvault.config import AuthMode, VaultConfig
-from docvault.core.store import DocVault
+from docvault.core.vault import DocVault
 from tests.conftest import asgi_lifespan_client
 
 
@@ -37,7 +40,6 @@ async def authed_client(tmp_path):
 
 
 async def test_docs_at_ref(client: AsyncClient):
-    # Create then update a document
     create_resp = await client.post(
         "/api/v1/docs", json={"content": {"v": "original"}, "creator": "alice"}
     )
@@ -49,12 +51,10 @@ async def test_docs_at_ref(client: AsyncClient):
         json={"content": {"v": "updated"}},
     )
 
-    # Get commit history
     history_resp = await client.get(f"/api/v1/docs/{doc_id}/history")
     commits = history_resp.json()
     assert len(commits) >= 2
 
-    # Fetch at the oldest commit (last in history list)
     first_sha = commits[-1]["sha"]
     at_resp = await client.get(f"/api/v1/docs/{doc_id}/at/{first_sha}")
     assert at_resp.status_code == 200
@@ -92,36 +92,36 @@ async def test_summarize_all_no_llm(client: AsyncClient):
     assert resp.status_code in (200, 503, 500)
 
 
-# ── Vault deploy ──────────────────────────────────────────────────────────────
+# ── Store deploy ──────────────────────────────────────────────────────────────
 
 
-async def test_vault_deploy(client: AsyncClient):
+async def test_store_deploy(client: AsyncClient):
     await client.post(
-        "/api/v1/templates",
+        "/api/v1/stores",
         json={
             "name": "svc",
             "structure": {"cfg": {"description": "config", "required": True}},
         },
     )
     payload = {
-        "template_name": "svc",
+        "store_name": "svc",
         "documents": [
             {"path": "cfg", "content": {"host": "localhost"}, "creator": "bot"}
         ],
     }
-    resp = await client.post("/api/v1/vault/deploy", json=payload)
+    resp = await client.post("/api/v1/stores/svc/deploy", json=payload)
     assert resp.status_code == 201
     docs = resp.json()
     assert len(docs) == 1
-    assert docs[0]["meta"]["template"] == "svc"
+    assert docs[0]["meta"]["path"] == "cfg"
 
 
-async def test_vault_deploy_unknown_template(client: AsyncClient):
+async def test_store_deploy_unknown_store(client: AsyncClient):
     payload = {
-        "template_name": "no-such-template",
+        "store_name": "no-such-store",
         "documents": [{"path": "x", "content": {}, "creator": "bot"}],
     }
-    resp = await client.post("/api/v1/vault/deploy", json=payload)
+    resp = await client.post("/api/v1/stores/no-such-store/deploy", json=payload)
     assert resp.status_code == 404
 
 
@@ -153,21 +153,6 @@ async def test_list_docs_filter_by_keywords(client: AsyncClient):
     assert len(docs) == 1
 
 
-async def test_list_docs_filter_by_template(client: AsyncClient):
-    await client.post("/api/v1/templates", json={"name": "mytemplate"})
-    await client.post(
-        "/api/v1/docs",
-        json={"content": {"x": 1}, "creator": "alice", "template": "mytemplate"},
-    )
-    await client.post("/api/v1/docs", json={"content": {"y": 2}, "creator": "alice"})
-
-    resp = await client.get("/api/v1/docs?template=mytemplate")
-    assert resp.status_code == 200
-    docs = resp.json()
-    assert len(docs) == 1
-    assert docs[0]["template"] == "mytemplate"
-
-
 # ── 404 responses ────────────────────────────────────────────────────────────
 
 
@@ -177,8 +162,8 @@ async def test_get_doc_unknown_id_404(client: AsyncClient):
     assert "detail" in resp.json()
 
 
-async def test_get_template_unknown_404(client: AsyncClient):
-    resp = await client.get("/api/v1/templates/no-such-template")
+async def test_get_store_unknown_404(client: AsyncClient):
+    resp = await client.get("/api/v1/stores/no-such-store")
     assert resp.status_code == 404
 
 
@@ -193,11 +178,6 @@ async def test_delete_doc_then_get_404(client: AsyncClient):
 
 
 # ── 422 validation errors ────────────────────────────────────────────────────
-
-
-async def test_create_doc_missing_content_422(client: AsyncClient):
-    resp = await client.post("/api/v1/docs", json={"creator": "alice"})
-    assert resp.status_code == 422
 
 
 async def test_create_doc_non_object_content_422(client: AsyncClient):
@@ -237,18 +217,18 @@ async def test_create_doc_response_is_json(client: AsyncClient):
     assert "application/json" in resp.headers["content-type"]
 
 
-async def test_template_export_content_type_zip(client: AsyncClient):
-    ref = (await client.post("/api/v1/templates", json={"name": "export-test"})).json()
-    resp = await client.get(f"/api/v1/templates/{ref['id']}/export")
+async def test_store_export_content_type_zip(client: AsyncClient):
+    await client.post("/api/v1/stores", json={"name": "export-test"})
+    resp = await client.get("/api/v1/stores/export-test/export")
     assert resp.status_code == 200
     assert "application/zip" in resp.headers["content-type"]
 
 
-# ── TemplateRef response shape ────────────────────────────────────────────────
+# ── StoreRef response shape ────────────────────────────────────────────────────
 
 
-async def test_create_template_response_shape(client: AsyncClient):
-    resp = await client.post("/api/v1/templates", json={"name": "shaped"})
+async def test_create_store_response_shape(client: AsyncClient):
+    resp = await client.post("/api/v1/stores", json={"name": "shaped"})
     assert resp.status_code == 201
     body = resp.json()
     assert "name" in body

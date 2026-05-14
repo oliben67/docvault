@@ -1,13 +1,16 @@
+# Future imports (must occur at the beginning of the file):
 from __future__ import annotations
 
+# Standard library imports:
 from collections.abc import AsyncGenerator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any
 
+# Third party imports:
 from fastapi import APIRouter, FastAPI
 
 from ..config import VaultConfig
-from ..core.store import DocVault
+from ..core.vault import DocVault
 from .auth import build_auth_dep
 from .router import create_router
 

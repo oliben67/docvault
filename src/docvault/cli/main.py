@@ -12,21 +12,21 @@ from rich.table import Table
 
 from docvault.config import load_config
 from docvault.core.document import CreateDocInput, UpdateDocInput
-from docvault.core.store import DocVault
-from docvault.core.template import DeployDocSpec, DeployVaultInput, TemplateCreateInput
+from docvault.core.vault import DocVault
+from docvault.core.store import DeployDocSpec, DeployStoreInput, StoreCreateInput
 from docvault.exceptions import DocVaultError
 
 app = typer.Typer(
     name="docvault", help="Git-backed JSON document manager", no_args_is_help=True
 )
 docs_app = typer.Typer(help="Manage documents", no_args_is_help=True)
-templates_app = typer.Typer(help="Manage templates", no_args_is_help=True)
+stores_app = typer.Typer(help="Manage stores", no_args_is_help=True)
 vault_app = typer.Typer(help="Manage vault metadata", no_args_is_help=True)
 config_app = typer.Typer(help="Config and key management", no_args_is_help=True)
 tools_app = typer.Typer(help="Host-system tools (deploy, etc.)", no_args_is_help=True)
 
 app.add_typer(docs_app, name="docs")
-app.add_typer(templates_app, name="templates")
+app.add_typer(stores_app, name="stores")
 app.add_typer(vault_app, name="vault")
 app.add_typer(config_app, name="config")
 app.add_typer(tools_app, name="tools")
@@ -39,7 +39,7 @@ _CFG_OPT = typer.Option(
 )
 
 
-# ── Helpers ─────────────────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 
 def _load_json(file: Path) -> Any:
@@ -48,9 +48,9 @@ def _load_json(file: Path) -> Any:
 
 
 async def _open(config_file: Path | None) -> DocVault:
-    store = DocVault(load_config(config_file))
-    await store.open()
-    return store
+    vault = DocVault(load_config(config_file))
+    await vault.open()
+    return vault
 
 
 def _run(coro) -> Any:  # type: ignore[type-arg]
@@ -77,8 +77,8 @@ def init(
         cfg = load_config(config_file)
         if str(path) != ".":
             cfg = cfg.model_copy(update={"vault_path": path.expanduser().resolve()})
-        store = DocVault(cfg)
-        _run(store.init())
+        vault = DocVault(cfg)
+        _run(vault.init())
         out.print(f"[green]✓[/green] Vault ready at [bold]{cfg.vault_path}[/bold]")
     except DocVaultError as exc:
         _abort(exc)
@@ -93,7 +93,6 @@ def serve(
     """Start the REST API server."""
     try:
         import uvicorn
-
         from docvault.api.app import create_app
 
         uvicorn.run(create_app(load_config(config_file)), host=host, port=port)
@@ -106,36 +105,31 @@ def serve(
 
 @docs_app.command("list")
 def docs_list(
-    template: str | None = typer.Option(
-        None, "--template", "-t", help="Filter by template"
-    ),
     creator: str | None = typer.Option(None, "--creator", help="Filter by creator"),
     keywords: str | None = typer.Option(
         None, "--keywords", help="Comma-separated keywords"
     ),
     config_file: Path | None = _CFG_OPT,
 ) -> None:
-    """List documents."""
+    """List root-level (free-floating) documents."""
     try:
         kw = [k.strip() for k in keywords.split(",")] if keywords else None
 
         async def _go() -> None:
-            store = await _open(config_file)
-            metas = await store.list_docs(
-                keywords=kw, creator=creator, template=template
-            )
+            vault = await _open(config_file)
+            metas = await vault.list_docs(keywords=kw, creator=creator)
             if not metas:
                 out.print("[dim]No documents found.[/dim]")
                 return
-            table = Table("ID", "Template", "Creator", "Summary", "Updated")
+            table = Table("ID", "Creator", "Binary", "Summary", "Updated")
             for m in metas:
                 summary = (
                     (m.summary[:48] + "…") if len(m.summary) > 50 else m.summary or "-"
                 )
                 table.add_row(
                     m.id[:12],
-                    m.template or "-",
                     m.creator,
+                    "yes" if m.is_binary else "-",
                     summary,
                     m.updated_at.strftime("%Y-%m-%d %H:%M"),
                 )
@@ -155,8 +149,8 @@ def docs_get(
     try:
 
         async def _go() -> None:
-            store = await _open(config_file)
-            doc = await store.get_doc(doc_id)
+            vault = await _open(config_file)
+            doc = await vault.get_doc(doc_id)
             out.print_json(json.dumps(doc.model_dump(mode="json")))
 
         _run(_go())
@@ -170,26 +164,24 @@ def docs_create(
     file: Path = typer.Option(
         ..., "--file", "-f", help="JSON content file (- for stdin)"
     ),
-    template: str | None = typer.Option(None, "--template", "-t"),
     summary: str = typer.Option("", "--summary", "-s"),
     keywords: str | None = typer.Option(None, "--keywords", help="Comma-separated"),
     config_file: Path | None = _CFG_OPT,
 ) -> None:
-    """Create a document from a JSON file."""
+    """Create a root document from a JSON file."""
     try:
         content = _load_json(file)
         kw = [k.strip() for k in keywords.split(",")] if keywords else []
         inp = CreateDocInput(
             content=content,
             creator=creator,
-            template=template,
             summary=summary,
             keywords=kw,
         )
 
         async def _go() -> None:
-            store = await _open(config_file)
-            doc = await store.create_doc(inp)
+            vault = await _open(config_file)
+            doc = await vault.create_doc(inp)
             out.print(f"[green]✓[/green] Created [bold]{doc.meta.id}[/bold]")
             out.print_json(json.dumps(doc.model_dump(mode="json")))
 
@@ -208,15 +200,15 @@ def docs_update(
     keywords: str | None = typer.Option(None, "--keywords"),
     config_file: Path | None = _CFG_OPT,
 ) -> None:
-    """Replace a document's content."""
+    """Replace a root document's content."""
     try:
         content = _load_json(file)
         kw = [k.strip() for k in keywords.split(",")] if keywords else None
         inp = UpdateDocInput(content=content, summary=summary, keywords=kw)
 
         async def _go() -> None:
-            store = await _open(config_file)
-            doc = await store.update_doc(doc_id, inp)
+            vault = await _open(config_file)
+            doc = await vault.update_doc(doc_id, inp)
             out.print(f"[green]✓[/green] Updated [bold]{doc_id}[/bold]")
             out.print_json(json.dumps(doc.model_dump(mode="json")))
 
@@ -231,14 +223,14 @@ def docs_delete(
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
     config_file: Path | None = _CFG_OPT,
 ) -> None:
-    """Delete a document."""
+    """Delete a root document."""
     if not force:
         typer.confirm(f"Delete document {doc_id!r}?", abort=True)
     try:
 
         async def _go() -> None:
-            store = await _open(config_file)
-            await store.delete_doc(doc_id)
+            vault = await _open(config_file)
+            await vault.delete_doc(doc_id)
             out.print(f"[green]✓[/green] Deleted [bold]{doc_id}[/bold]")
 
         _run(_go())
@@ -256,8 +248,8 @@ def docs_history(
     try:
 
         async def _go() -> None:
-            store = await _open(config_file)
-            commits = await store.get_doc_history(doc_id, max_count=max_count)
+            vault = await _open(config_file)
+            commits = await vault.get_doc_history(doc_id, max_count=max_count)
             if not commits:
                 out.print("[dim]No history found.[/dim]")
                 return
@@ -282,12 +274,12 @@ def docs_at(
     ref: str = typer.Argument(..., help="Git ref (commit SHA, tag, branch)"),
     config_file: Path | None = _CFG_OPT,
 ) -> None:
-    """Show a document at a specific git ref."""
+    """Show a root document at a specific git ref."""
     try:
 
         async def _go() -> None:
-            store = await _open(config_file)
-            doc = await store.get_doc_at_ref(doc_id, ref)
+            vault = await _open(config_file)
+            doc = await vault.get_doc_at_ref(doc_id, ref)
             out.print_json(json.dumps(doc.model_dump(mode="json")))
 
         _run(_go())
@@ -307,8 +299,8 @@ def docs_summarize(
     try:
 
         async def _go() -> None:
-            store = await _open(config_file)
-            doc = await store.summarize_doc(doc_id, overwrite=overwrite)
+            vault = await _open(config_file)
+            doc = await vault.summarize_doc(doc_id, overwrite=overwrite)
             out.print(f"[green]Summary:[/green]  {doc.meta.summary}")
             out.print(f"[green]Keywords:[/green] {', '.join(doc.meta.keywords)}")
 
@@ -324,12 +316,12 @@ def docs_summarize_all(
     ),
     config_file: Path | None = _CFG_OPT,
 ) -> None:
-    """Infer summary and keywords for every document that is missing them."""
+    """Infer summary and keywords for every root document that is missing them."""
     try:
 
         async def _go() -> None:
-            store = await _open(config_file)
-            docs = await store.summarize_all(overwrite=overwrite)
+            vault = await _open(config_file)
+            docs = await vault.summarize_all(overwrite=overwrite)
             if not docs:
                 out.print("[dim]Nothing to summarize.[/dim]")
                 return
@@ -342,27 +334,29 @@ def docs_summarize_all(
         _abort(exc)
 
 
-# ── Templates ────────────────────────────────────────────────────────────────
+# ── Stores ────────────────────────────────────────────────────────────────────
 
 
-@templates_app.command("list")
-def templates_list(config_file: Path | None = _CFG_OPT) -> None:
-    """List all templates."""
+@stores_app.command("list")
+def stores_list(config_file: Path | None = _CFG_OPT) -> None:
+    """List all stores in the vault."""
     try:
 
         async def _go() -> None:
-            store = await _open(config_file)
-            templates = await store.list_templates()
-            if not templates:
-                out.print("[dim]No templates found.[/dim]")
+            vault = await _open(config_file)
+            stores = await vault.list_stores()
+            if not stores:
+                out.print("[dim]No stores found.[/dim]")
                 return
-            table = Table("Name", "ID", "Description", "Created")
-            for t in templates:
+            table = Table("Name", "Version", "Locked", "Slots", "Description", "Created")
+            for s in stores:
                 table.add_row(
-                    t.name,
-                    t.id,
-                    t.description or "-",
-                    t.created_at.strftime("%Y-%m-%d"),
+                    s.name,
+                    str(s.version),
+                    "🔒" if s.locked else "-",
+                    str(len(s.structure)),
+                    s.description or "-",
+                    s.created_at.strftime("%Y-%m-%d"),
                 )
             out.print(table)
 
@@ -371,55 +365,59 @@ def templates_list(config_file: Path | None = _CFG_OPT) -> None:
         _abort(exc)
 
 
-@templates_app.command("get")
-def templates_get(
-    template_id: str = typer.Argument(..., help="Template ID"),
+@stores_app.command("get")
+def stores_get(
+    name: str = typer.Argument(..., help="Store name"),
     config_file: Path | None = _CFG_OPT,
 ) -> None:
-    """Print a template as JSON."""
+    """Print a store's metadata as JSON."""
     try:
 
         async def _go() -> None:
-            store = await _open(config_file)
-            template = await store.get_template(template_id)
-            out.print_json(json.dumps(template.model_dump(mode="json")))
+            vault = await _open(config_file)
+            store_obj = await vault.get_store(name)
+            meta = await store_obj.get_meta()
+            out.print_json(json.dumps(meta.model_dump(mode="json")))
 
         _run(_go())
     except DocVaultError as exc:
         _abort(exc)
 
 
-@templates_app.command("create")
-def templates_create(
-    name: str = typer.Argument(..., help="Template name"),
+@stores_app.command("create")
+def stores_create(
+    name: str = typer.Argument(..., help="Store name"),
     file: Path | None = typer.Option(
         None, "--file", "-f", help="JSON file with structure dict (slot-path → DocSlot)"
     ),
     path: Path | None = typer.Option(
-        None, "--path", "-p", help="File or folder to ingest as template slots"
+        None, "--path", "-p", help="File or folder to ingest as store slots"
     ),
     description: str = typer.Option("", "--description", "-d"),
+    locked: bool = typer.Option(False, "--locked", help="Lock store to deploy-only updates"),
     config_file: Path | None = _CFG_OPT,
 ) -> None:
-    """Create a template from a structure file or by ingesting a file/folder."""
+    """Create a store (optionally ingesting a folder as slot documents)."""
     if file is None and path is None:
-        err.print("Error: provide --file or --path")
-        raise typer.Exit(1)
-    try:
+        structure: dict = {}
+    else:
         structure = _load_json(file) if file else {}
-        inp = TemplateCreateInput(
+    try:
+        inp = StoreCreateInput(
             name=name,
             description=description,
             structure=structure,
             path=path,
+            locked=locked,
         )
 
         async def _go() -> None:
-            store = await _open(config_file)
-            ref = await store.create_template(inp)
+            vault = await _open(config_file)
+            store_obj = await vault.create_store(inp)
+            meta = await store_obj.get_meta()
             out.print(
-                f"[green]✓[/green] Created template [bold]{ref.name}[/bold]"
-                f"  id={ref.id}"
+                f"[green]✓[/green] Store [bold]{meta.name}[/bold]  "
+                f"v{meta.version}  id={meta.id}"
             )
 
         _run(_go())
@@ -427,24 +425,121 @@ def templates_create(
         _abort(exc)
 
 
-@templates_app.command("delete")
-def templates_delete(
-    template_id: str = typer.Argument(..., help="Template ID"),
+@stores_app.command("delete")
+def stores_delete(
+    name: str = typer.Argument(..., help="Store name"),
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
     config_file: Path | None = _CFG_OPT,
 ) -> None:
-    """Delete a template."""
+    """Delete a store and all its documents."""
     if not force:
-        typer.confirm(f"Delete template {template_id!r}?", abort=True)
+        typer.confirm(f"Delete store {name!r} and all its documents?", abort=True)
     try:
 
         async def _go() -> None:
-            store = await _open(config_file)
-            await store.delete_template(template_id)
-            out.print(f"[green]✓[/green] Deleted template [bold]{template_id}[/bold]")
+            vault = await _open(config_file)
+            await vault.delete_store(name)
+            out.print(f"[green]✓[/green] Deleted store [bold]{name}[/bold]")
 
         _run(_go())
     except DocVaultError as exc:
+        _abort(exc)
+
+
+@stores_app.command("validate")
+def stores_validate(
+    name: str = typer.Argument(..., help="Store name"),
+    config_file: Path | None = _CFG_OPT,
+) -> None:
+    """Check slot coverage for a store."""
+    try:
+
+        async def _go() -> None:
+            vault = await _open(config_file)
+            result = await vault.validate_store(name)
+            status = "[green]✓ satisfied[/green]" if result.valid else "[red]✗ incomplete[/red]"
+            out.print(f"Store [bold]{name}[/bold]: {status}")
+            for slot in result.satisfied:
+                out.print(f"  [green]●[/green] {slot}")
+            for slot in result.missing:
+                out.print(f"  [red]○[/red] {slot}  [dim](missing)[/dim]")
+            if result.extra:
+                out.print(f"  [dim]extra: {', '.join(result.extra)}[/dim]")
+
+        _run(_go())
+    except DocVaultError as exc:
+        _abort(exc)
+
+
+# ── Store docs sub-commands ───────────────────────────────────────────────────
+
+store_docs_app = typer.Typer(help="Manage documents within a store", no_args_is_help=True)
+stores_app.add_typer(store_docs_app, name="docs")
+
+
+@store_docs_app.command("list")
+def store_docs_list(
+    name: str = typer.Argument(..., help="Store name"),
+    creator: str | None = typer.Option(None, "--creator", help="Filter by creator"),
+    keywords: str | None = typer.Option(None, "--keywords", help="Comma-separated"),
+    config_file: Path | None = _CFG_OPT,
+) -> None:
+    """List documents in a store."""
+    try:
+        kw = [k.strip() for k in keywords.split(",")] if keywords else None
+
+        async def _go() -> None:
+            vault = await _open(config_file)
+            store_obj = await vault.get_store(name)
+            metas = await store_obj.list_docs(keywords=kw, creator=creator)
+            if not metas:
+                out.print("[dim]No documents found.[/dim]")
+                return
+            table = Table("ID", "Path", "Creator", "Binary", "Summary", "Updated")
+            for m in metas:
+                summary = (
+                    (m.summary[:40] + "…") if len(m.summary) > 42 else m.summary or "-"
+                )
+                table.add_row(
+                    m.id[:12],
+                    m.path or "-",
+                    m.creator,
+                    "yes" if m.is_binary else "-",
+                    summary,
+                    m.updated_at.strftime("%Y-%m-%d %H:%M"),
+                )
+            out.print(table)
+
+        _run(_go())
+    except DocVaultError as exc:
+        _abort(exc)
+
+
+@store_docs_app.command("deploy")
+def store_docs_deploy(
+    name: str = typer.Argument(..., help="Store name"),
+    file: Path = typer.Option(
+        ..., "--file", "-f", help="JSON file: list of DeployDocSpec objects"
+    ),
+    config_file: Path | None = _CFG_OPT,
+) -> None:
+    """Batch-deploy documents into a store (required for locked stores)."""
+    try:
+        raw = _load_json(file)
+        specs = [
+            DeployDocSpec(**item) for item in (raw if isinstance(raw, list) else [raw])
+        ]
+        inp = DeployStoreInput(store_name=name, documents=specs)
+
+        async def _go() -> None:
+            vault = await _open(config_file)
+            docs = await vault.deploy_store(inp)
+            out.print(f"[green]✓[/green] Deployed {len(docs)} document(s) into store [bold]{name}[/bold]")
+            for doc in docs:
+                out.print(f"  [dim]{doc.meta.id}[/dim]")
+
+        _run(_go())
+    except (DocVaultError, json.JSONDecodeError) as exc:
         _abort(exc)
 
 
@@ -457,12 +552,12 @@ def vault_info(config_file: Path | None = _CFG_OPT) -> None:
     try:
 
         async def _go() -> None:
-            store = await _open(config_file)
-            vault = await store.get_vault()
-            out.print(f"Name:    {vault.name}")
-            out.print(f"Version: [bold]{vault.version}[/bold]")
-            out.print(f"Desc:    {vault.description or '-'}")
-            out.print(f"Updated: {vault.updated_at.strftime('%Y-%m-%d %H:%M')}")
+            vault = await _open(config_file)
+            v = await vault.get_vault()
+            out.print(f"Name:    {v.name}")
+            out.print(f"Version: [bold]{v.version}[/bold]")
+            out.print(f"Desc:    {v.description or '-'}")
+            out.print(f"Updated: {v.updated_at.strftime('%Y-%m-%d %H:%M')}")
 
         _run(_go())
     except DocVaultError as exc:
@@ -475,8 +570,8 @@ def vault_versions(config_file: Path | None = _CFG_OPT) -> None:
     try:
 
         async def _go() -> None:
-            store = await _open(config_file)
-            versions = await store.list_vault_versions()
+            vault = await _open(config_file)
+            versions = await vault.list_vault_versions()
             if not versions:
                 out.print("[dim]No version tags found.[/dim]")
                 return
@@ -502,40 +597,12 @@ def vault_bump(
     try:
 
         async def _go() -> None:
-            store = await _open(config_file)
-            vault = await store.bump_vault_version(kind)
-            out.print(f"[green]✓[/green] Vault version → [bold]{vault.version}[/bold]")
+            vault = await _open(config_file)
+            v = await vault.bump_vault_version(kind)
+            out.print(f"[green]✓[/green] Vault version → [bold]{v.version}[/bold]")
 
         _run(_go())
     except DocVaultError as exc:
-        _abort(exc)
-
-
-@vault_app.command("deploy")
-def vault_deploy(
-    template_name: str = typer.Option(..., "--template", "-t", help="Template name"),
-    file: Path = typer.Option(
-        ..., "--file", "-f", help="JSON file: list of DeployDocSpec objects"
-    ),
-    config_file: Path | None = _CFG_OPT,
-) -> None:
-    """Batch-create documents from a template."""
-    try:
-        raw = _load_json(file)
-        specs = [
-            DeployDocSpec(**item) for item in (raw if isinstance(raw, list) else [raw])
-        ]
-        inp = DeployVaultInput(template_name=template_name, documents=specs)
-
-        async def _go() -> None:
-            store = await _open(config_file)
-            docs = await store.deploy_vault(inp)
-            out.print(f"[green]✓[/green] Deployed {len(docs)} document(s)")
-            for doc in docs:
-                out.print(f"  [dim]{doc.meta.id}[/dim]")
-
-        _run(_go())
-    except (DocVaultError, json.JSONDecodeError) as exc:
         _abort(exc)
 
 
@@ -580,8 +647,8 @@ def config_generate_key(
 
 @tools_app.command("deploy")
 def tools_deploy(
-    template_id: str = typer.Argument(
-        ..., help="Template name or full ID (name/vX.Y.Z/hash)"
+    store_name: str = typer.Argument(
+        ..., help="Store name or full ID (name:hash:hash)"
     ),
     target: Path = typer.Argument(..., help="Local directory to deploy into"),
     server: str = typer.Option(
@@ -594,16 +661,12 @@ def tools_deploy(
         False, "--overwrite", help="Overwrite existing files"
     ),
 ) -> None:
-    """Deploy a template from a running DocVault server to a local directory.
-
-    Downloads the template export zip and extracts each slot document at its
-    path inside TARGET, recreating the template's folder structure on disk.
-    """
-    from docvault.tools import deploy_template
+    """Deploy a store from a running DocVault server to a local directory."""
+    from docvault.tools import deploy_store
 
     try:
-        files = deploy_template(
-            template_id,
+        files = deploy_store(
+            store_name,
             target_path=target,
             base_url=server,
             api_key=api_key,

@@ -1,11 +1,15 @@
+# Future imports (must occur at the beginning of the file):
 from __future__ import annotations
 
+# Standard library imports:
 import json
 from pathlib import Path
 
+# Third party imports:
 import pytest
 from typer.testing import CliRunner
 
+# Local imports:
 from docvault.cli.main import app
 
 runner = CliRunner()
@@ -40,17 +44,6 @@ def _create_doc(cfg_path: Path, content: dict, creator: str = "alice") -> str:
         + _cfg(cfg_path),
     )
     assert result.exit_code == 0, result.output
-    # Extract ID from JSON output
-    for line in result.output.splitlines():
-        if '"id"' in line:
-            return json.loads(
-                "\n".join(
-                    line
-                    for line in result.output.splitlines()
-                    if line.strip().startswith("{") or line.strip().startswith("}")
-                )
-            )
-    # Parse the full JSON block
     lines = result.output.splitlines()
     json_start = next((i for i, line in enumerate(lines) if line.strip() == "{"), None)
     if json_start is not None:
@@ -114,8 +107,7 @@ def test_docs_create_success(vault, tmp_path):
     assert "Created" in result.output
 
 
-def test_docs_create_with_template_and_keywords(vault, tmp_path):
-    runner.invoke(app, ["templates", "create", "mytpl"] + _cfg(vault))
+def test_docs_create_with_keywords(vault, tmp_path):
     content_file = tmp_path / "c.json"
     content_file.write_text('{"x": 1}', encoding="utf-8")
     result = runner.invoke(
@@ -127,8 +119,6 @@ def test_docs_create_with_template_and_keywords(vault, tmp_path):
             "alice",
             "--file",
             str(content_file),
-            "--template",
-            "mytpl",
             "--keywords",
             "alpha,beta",
         ]
@@ -159,7 +149,6 @@ def test_docs_get_existing(vault, tmp_path):
         ["docs", "create", "--creator", "alice", "--file", str(content_file)]
         + _cfg(vault),
     )
-    # Extract doc ID from JSON output
     output_json = None
     lines = create_result.output.splitlines()
     for i, line in enumerate(lines):
@@ -274,7 +263,6 @@ def test_docs_history_shows_commits(vault, tmp_path):
 
     result = runner.invoke(app, ["docs", "history", doc_id] + _cfg(vault))
     assert result.exit_code == 0
-    # SHA column should appear in the output
     assert len(result.output) > 10
 
 
@@ -310,107 +298,93 @@ def test_docs_summarize_no_llm_exits_1(vault, tmp_path):
 
 
 def test_docs_summarize_all_no_llm_no_crash(vault):
-    # With no docs and no LLM, should print "Nothing to summarize" or similar
     result = runner.invoke(app, ["docs", "summarize-all"] + _cfg(vault))
-    # May succeed (no docs) or fail (no LLM) — either is acceptable
     assert result.exit_code in (0, 1)
 
 
-# ── templates list ────────────────────────────────────────────────────────────
+# ── stores list ──────────────────────────────────────────────────────────────
 
 
-def test_templates_list_empty(vault):
-    result = runner.invoke(app, ["templates", "list"] + _cfg(vault))
+def test_stores_list_empty(vault):
+    result = runner.invoke(app, ["stores", "list"] + _cfg(vault))
     assert result.exit_code == 0
-    assert "No templates" in result.output
+    assert "No stores" in result.output
 
 
-def test_templates_list_shows_created(vault, tmp_path):
+def test_stores_list_shows_created(vault, tmp_path):
     struct_file = tmp_path / "struct.json"
     struct_file.write_text(
         '{"cfg": {"description": "config", "required": true}}', encoding="utf-8"
     )
     runner.invoke(
-        app, ["templates", "create", "mytpl", "--file", str(struct_file)] + _cfg(vault)
+        app, ["stores", "create", "mystore", "--file", str(struct_file)] + _cfg(vault)
     )
-    result = runner.invoke(app, ["templates", "list"] + _cfg(vault))
+    result = runner.invoke(app, ["stores", "list"] + _cfg(vault))
     assert result.exit_code == 0
-    assert "mytpl" in result.output
+    assert "mystore" in result.output
 
 
-# ── templates get ─────────────────────────────────────────────────────────────
+# ── stores get ────────────────────────────────────────────────────────────────
 
 
-def _create_template_id(vault, tmp_path, name: str) -> str:
-    """Helper: create a template via --file and return its ID."""
-    struct_file = tmp_path / f"struct-{name}.json"
-    struct_file.write_text(
-        '{"cfg": {"description": "config", "required": true}}', encoding="utf-8"
+def test_stores_get_existing(vault, tmp_path):
+    struct_file = tmp_path / "struct.json"
+    struct_file.write_text('{"cfg": {"required": true}}', encoding="utf-8")
+    runner.invoke(
+        app, ["stores", "create", "mystore", "--file", str(struct_file)] + _cfg(vault)
     )
-    r = runner.invoke(
-        app, ["templates", "create", name, "--file", str(struct_file)] + _cfg(vault)
-    )
-    assert r.exit_code == 0, r.output
-    # The output line is: "✓ Created template <name>  id=<uuid>"
-    for part in r.output.split():
-        if part.startswith("id="):
-            return part[3:]
-    raise ValueError(f"Could not extract template ID from: {r.output}")
-
-
-def test_templates_get_existing(vault, tmp_path):
-    template_id = _create_template_id(vault, tmp_path, "tpl1")
-    result = runner.invoke(app, ["templates", "get", template_id] + _cfg(vault))
+    result = runner.invoke(app, ["stores", "get", "mystore"] + _cfg(vault))
     assert result.exit_code == 0
-    assert "tpl1" in result.output
+    assert "mystore" in result.output
 
 
-def test_templates_get_nonexistent_exits_1(vault):
-    result = runner.invoke(app, ["templates", "get", "no-such-uuid"] + _cfg(vault))
+def test_stores_get_nonexistent_exits_1(vault):
+    result = runner.invoke(app, ["stores", "get", "no-such-store"] + _cfg(vault))
     assert result.exit_code == 1
 
 
-# ── templates create ──────────────────────────────────────────────────────────
+# ── stores create ─────────────────────────────────────────────────────────────
 
 
-def test_templates_create_minimal(vault):
-    result = runner.invoke(app, ["templates", "create", "minimal"] + _cfg(vault))
-    assert result.exit_code == 1  # no --file or --path
+def test_stores_create_minimal(vault):
+    result = runner.invoke(app, ["stores", "create", "minimal"] + _cfg(vault))
+    assert result.exit_code == 0
+    assert "minimal" in result.output
 
 
-def test_templates_create_with_path_folder(vault, tmp_path):
+def test_stores_create_with_path_folder(vault, tmp_path):
     folder = tmp_path / "src"
     folder.mkdir()
     (folder / "config.json").write_text('{"port": 8080}', encoding="utf-8")
     result = runner.invoke(
         app,
-        ["templates", "create", "folder-tpl", "--path", str(folder)] + _cfg(vault),
+        ["stores", "create", "folder-st", "--path", str(folder)] + _cfg(vault),
     )
     assert result.exit_code == 0
-    assert "folder-tpl" in result.output
+    assert "folder-st" in result.output
 
 
-def test_templates_create_with_path_single_file(vault, tmp_path):
+def test_stores_create_with_path_single_file(vault, tmp_path):
     single = tmp_path / "settings.json"
     single.write_text('{"debug": true}', encoding="utf-8")
     result = runner.invoke(
         app,
-        ["templates", "create", "file-tpl", "--path", str(single)] + _cfg(vault),
+        ["stores", "create", "file-st", "--path", str(single)] + _cfg(vault),
     )
     assert result.exit_code == 0
-    assert "file-tpl" in result.output
+    assert "file-st" in result.output
 
 
-def test_templates_create_with_description(vault, tmp_path):
+def test_stores_create_with_description(vault, tmp_path):
     folder = tmp_path / "s"
     folder.mkdir()
     (folder / "a.json").write_text('{"x": 1}', encoding="utf-8")
     result = runner.invoke(
         app,
         [
-            "templates",
+            "stores",
             "create",
-            "described-tpl",
+            "described-st",
             "--path",
             str(folder),
             "--description",
@@ -421,21 +395,29 @@ def test_templates_create_with_description(vault, tmp_path):
     assert result.exit_code == 0
 
 
-# ── templates delete ──────────────────────────────────────────────────────────
-
-
-def test_templates_delete_with_force(vault, tmp_path):
-    template_id = _create_template_id(vault, tmp_path, "to-delete")
+def test_stores_create_locked(vault):
     result = runner.invoke(
-        app, ["templates", "delete", template_id, "--force"] + _cfg(vault)
+        app, ["stores", "create", "locked-st", "--locked"] + _cfg(vault)
+    )
+    assert result.exit_code == 0
+    assert "locked-st" in result.output
+
+
+# ── stores delete ─────────────────────────────────────────────────────────────
+
+
+def test_stores_delete_with_force(vault, tmp_path):
+    runner.invoke(app, ["stores", "create", "to-delete"] + _cfg(vault))
+    result = runner.invoke(
+        app, ["stores", "delete", "to-delete", "--force"] + _cfg(vault)
     )
     assert result.exit_code == 0
     assert "Deleted" in result.output
 
 
-def test_templates_delete_nonexistent_exits_1(vault):
+def test_stores_delete_nonexistent_exits_1(vault):
     result = runner.invoke(
-        app, ["templates", "delete", "no-such-uuid", "--force"] + _cfg(vault)
+        app, ["stores", "delete", "no-such-store", "--force"] + _cfg(vault)
     )
     assert result.exit_code == 1
 
@@ -486,19 +468,11 @@ def test_vault_bump_invalid_kind_exits_1(vault):
     assert result.exit_code == 1
 
 
-# ── vault deploy ─────────────────────────────────────────────────────────────
+# ── stores docs deploy ────────────────────────────────────────────────────────
 
 
-def test_vault_deploy(vault, tmp_path):
-    import tempfile
-
-    # Create a template first
-    with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
-        json.dump({}, f)
-        tpl_struct = f.name
-    runner.invoke(
-        app, ["templates", "create", "deploy-tpl", "--file", tpl_struct] + _cfg(vault)
-    )
+def test_stores_docs_deploy(vault, tmp_path):
+    runner.invoke(app, ["stores", "create", "deploy-st"] + _cfg(vault))
 
     specs = [{"path": "slot1", "content": {"k": "v"}, "creator": "bot"}]
     spec_file = tmp_path / "specs.json"
@@ -506,7 +480,7 @@ def test_vault_deploy(vault, tmp_path):
 
     result = runner.invoke(
         app,
-        ["vault", "deploy", "--template", "deploy-tpl", "--file", str(spec_file)]
+        ["stores", "docs", "deploy", "deploy-st", "--file", str(spec_file)]
         + _cfg(vault),
     )
     assert result.exit_code == 0
@@ -556,4 +530,4 @@ def test_config_generate_key_multiple(vault):
     assert result.exit_code == 0
     keys = [line.strip() for line in result.output.strip().splitlines() if line.strip()]
     assert len(keys) == 5
-    assert len(set(keys)) == 5  # all unique
+    assert len(set(keys)) == 5

@@ -4,7 +4,7 @@ DocVault is a git-backed document store for structured data. Every write is a gi
 
 It ships as a standalone REST API, an embeddable FastAPI shim, and a CLI — fitting equally as an independent microservice or as a library embedded inside your existing application.
 
-Documents can be plain JSON or any text-based file. Templates define named folder structures with optional per-slot JSON Schema validation. Templates are content-addressable: their ID encodes both the source path and a hash of the content, so any change to the folder is detected automatically and increments the template version. Revert a folder to a previous snapshot and the version number reverts with it. A template can be bootstrapped from a local directory, exported as a zip archive, and deployed to any target path. The vault carries a semantic version that can be bumped to create a permanent git-tag snapshot of the entire collection. An optional LLM integration (Claude) auto-generates summaries and keywords from document content.
+Documents can be plain JSON, text, or binary files. **Stores** define named folder structures with optional per-slot JSON Schema validation. Stores are content-addressable: their ID encodes both the source path and a hash of the content, so any change to the folder is detected automatically and increments the store version. Revert a folder to a previous snapshot and the version number reverts with it. A store can be bootstrapped from a local directory, exported as a zip archive, and deployed to any target path. The vault carries a semantic version that can be bumped to create a permanent git-tag snapshot of the entire collection. Stores can be marked locked to prevent direct document modification (deploy bypasses the lock). An optional LLM integration (Claude) auto-generates summaries and keywords from document content.
 
 ---
 
@@ -21,12 +21,14 @@ Documents can be plain JSON or any text-based file. Templates define named folde
   - [Authentication](#authentication-in-the-shim)
   - [Custom URL prefix](#custom-url-prefix)
   - [Testing your integration](#testing-your-shim-integration)
-- [Templates & versioning](#templates--versioning)
-  - [Creating a template](#creating-a-template)
+- [Stores & versioning](#stores--versioning)
+  - [Creating a store](#creating-a-store)
   - [Content-addressable IDs](#content-addressable-ids)
   - [Integer versioning and upsert](#integer-versioning-and-upsert)
   - [Version revert](#version-revert)
-  - [Copies](#copies)
+  - [Locked stores](#locked-stores)
+  - [Binary documents](#binary-documents)
+  - [Recursive nesting](#recursive-nesting)
 - [Configuration](#configuration)
 - [CLI reference](#cli-reference)
 - [LLM summarization](#llm-summarization)
@@ -39,11 +41,14 @@ Documents can be plain JSON or any text-based file. Templates define named folde
 
 - **Git-backed storage** — every document write (create, update, delete) produces a git commit. Full history with author, timestamp, and message.
 - **Point-in-time retrieval** — fetch any document at any commit SHA, tag, or branch.
-- **JSON Schema templates** — define named folder structures; each slot can carry its own JSON Schema draft-7 constraint validated on every write.
-- **Content-addressable template IDs** — template IDs encode `{name}:{path_hash}:{content_hash}`. Change the source folder and the ID changes; revert the folder and the original ID comes back.
-- **Integer template versioning** — templates start at version `1`. Each detected content change bumps the version. Reverting to a previously-seen content snapshot reverts the version number too.
+- **Stores with JSON Schema** — define named folder structures; each slot can carry its own JSON Schema draft-7 constraint validated on every write.
+- **Content-addressable store IDs** — store IDs encode `{name}:{path_hash}:{content_hash}`. Change the source folder and the ID changes; revert the folder and the original ID comes back.
+- **Integer store versioning** — stores start at version `1`. Each detected content change bumps the version. Reverting to a previously-seen content snapshot reverts the version number too.
+- **Locked stores** — mark a store as locked to prevent direct document modification; the `deploy()` path bypasses the lock for authorized writes.
+- **Binary documents** — store any binary file (images, PDFs, arbitrary bytes) via a base64 envelope; retrieve the original bytes transparently.
+- **Recursive nesting** — stores can contain sub-stores, each with their own document trees and version history.
 - **Vault versioning** — bump the vault's semantic version and create a git tag snapshot of the entire collection.
-- **Batch deploy** — create many documents from a single template in one atomic commit.
+- **Batch deploy** — create or replace many documents in one atomic commit via `store.deploy()`.
 - **LLM summarization** — auto-generate `summary` and `keywords` from document content using Claude.
 - **Flexible authentication** — none (dev), static API keys, or passthrough to your own auth system.
 - **Embeddable** — mount DocVault inside any existing FastAPI app via `DocVaultShim` without conflicts.
@@ -289,20 +294,23 @@ Tests that only hit `/health` or test auth rejection (no store access needed) ca
 
 ---
 
-## Templates & versioning
+## Stores & versioning
 
-### Creating a template
+### Creating a store
 
-Templates define a named set of document slots — logical paths such as `"config/app"` or `"docs/readme"` — with optional JSON Schema validation per slot. There are two ways to create one:
+Stores define a named set of document slots — logical paths such as `"config/app"` or `"docs/readme"` — with optional JSON Schema validation per slot. There are two ways to create one:
 
 **From a structure dict** (define slots explicitly):
 
 ```python
-from docvault.core.template import DocSlot, TemplateCreateInput
-from docvault.core.store import DocVault
+from docvault.core.store import DocSlot, StoreCreateInput
+from docvault.core.vault import DocVault
 
-ref = await store.create_template(
-    TemplateCreateInput(
+vault = DocVault(config)
+await vault.init()
+
+store = await vault.create_store(
+    StoreCreateInput(
         name="microservice",
         structure={
             "config/app": DocSlot(
@@ -321,75 +329,129 @@ ref = await store.create_template(
         },
     )
 )
-print(ref.name, ref.id)
+meta = await store.get_meta()
+print(meta.name, meta.id, meta.version)
 ```
 
 **From a path** (scan a folder or single file):
 
 ```python
-ref = await store.create_template(
-    TemplateCreateInput(name="project-docs", path=Path("./docs-folder"))
+store = await vault.create_store(
+    StoreCreateInput(name="project-docs", path=Path("./docs-folder"))
 )
 ```
 
 The folder is scanned recursively. Each file becomes a slot (using its relative path without extension). The file contents are ingested as vault documents. A single file creates one flat slot named after the file stem.
 
-`create_template` returns a `TemplateRef(name, id)`. Use `id` for all subsequent get/validate/export/delete operations.
+`create_store` returns a `Store` object. Call `await store.get_meta()` to get a `StoreMeta` with `id`, `name`, `version`, `structure`, and `version_history`. Use the store name for all subsequent get/validate/export/delete operations.
 
 ### Content-addressable IDs
 
-Template IDs are not random UUIDs — they encode identity and content:
+Store IDs are not random UUIDs — they encode identity and content:
 
 ```
 {name}:{md5(path)}:{md5(content)}
 ```
 
-- **name** — the template name (first segment, also the storage key)
-- **md5(path)** — hash of the source path (or name for structure-based templates)
+- **name** — the store name (first segment, also the storage key)
+- **md5(path)** — hash of the source path (or name for structure-based stores)
 - **md5(content)** — hash of the file tree or structure; this is what changes when content changes
 
 The same `name` + same `content_hash` → same ID. The same `name` + different `content_hash` → different ID.
 
 ### Integer versioning and upsert
 
-Template version is an integer starting at `1`. `create_template` is an **upsert**:
+Store version is an integer starting at `1`. `create_store` is an **upsert**:
 
 | Scenario | Result |
 |----------|--------|
-| Template name does not exist | Created with `version=1` |
-| Same name, same content hash | No-op — existing `TemplateRef` returned unchanged |
+| Store name does not exist | Created with `version=1` |
+| Same name, same content hash | No-op — existing `Store` returned unchanged |
 | Same name, new content hash (not seen before) | Version incremented by `max(history) + 1` |
 | Same name, content hash matches a historical snapshot | Version reverted to the snapshot's number |
 
-The `version_history` field on `Template` records every `{content_hash: version}` mapping the template has ever had.
+The `version_history` field on `StoreMeta` records every `{content_hash: version}` mapping the store has ever had.
 
 ```python
 # Create
-ref_v1 = await store.create_template(TemplateCreateInput(name="svc", path=folder))
-tpl = await store.get_template(ref_v1.id)
-print(tpl.version)        # 1
-print(tpl.version_history)  # {"<hash_a>": 1}
+store = await vault.create_store(StoreCreateInput(name="svc", path=folder))
+meta = await store.get_meta()
+print(meta.version)          # 1
+print(meta.version_history)  # {"<hash_a>": 1}
 
 # Change the folder contents
-ref_v2 = await store.create_template(TemplateCreateInput(name="svc", path=folder))
-tpl = await store.get_template(ref_v2.id)
-print(tpl.version)        # 2
-print(tpl.version_history)  # {"<hash_a>": 1, "<hash_b>": 2}
+store = await vault.create_store(StoreCreateInput(name="svc", path=folder))
+meta = await store.get_meta()
+print(meta.version)          # 2
+print(meta.version_history)  # {"<hash_a>": 1, "<hash_b>": 2}
 
 # Revert the folder to its original contents
-ref_v3 = await store.create_template(TemplateCreateInput(name="svc", path=folder))
-tpl = await store.get_template(ref_v3.id)
-print(tpl.version)        # 1  ← reverted
-print(ref_v3.id == ref_v1.id)  # True — same ID as the original
+store = await vault.create_store(StoreCreateInput(name="svc", path=folder))
+meta = await store.get_meta()
+print(meta.version)          # 1  ← reverted
 ```
 
 ### Version revert
 
 When the source folder is restored to a previously-seen state, the version number goes back to the number recorded for that content hash. History is never erased — reverting to v1 and then making a new change will produce v3, not v2, because v2 remains in history.
 
-### Copies
+### Locked stores
 
-Two templates are **copies** when they share the same `name` (first segment of the ID) and the same `content_hash` (last segment), regardless of whether the path hash (middle segment) differs. Creating a copy is always a no-op.
+A store can be marked as locked during creation:
+
+```python
+store = await vault.create_store(
+    StoreCreateInput(name="prod-config", locked=True)
+)
+```
+
+Locked stores reject direct document modification:
+
+```python
+# These raise StoreValidationError on a locked store:
+await store.update_doc(doc_id, UpdateDocInput(...))
+await store.delete_doc(doc_id)
+
+# deploy() is the authorized path — it bypasses the lock:
+await store.deploy([DeployDocSpec(path="config/app", content={...}, creator="ci-bot")])
+```
+
+This lets you model "write-only-via-CI" patterns where human ad-hoc edits are blocked but automated deploys succeed.
+
+### Binary documents
+
+Any binary file can be stored using `binary_content` and `mime_type`:
+
+```python
+from docvault.core.document import CreateDocInput
+
+pdf_bytes = Path("report.pdf").read_bytes()
+doc = await store.create_doc(
+    CreateDocInput(
+        binary_content=pdf_bytes,
+        mime_type="application/pdf",
+        creator="uploader",
+        path="reports/q1",
+    )
+)
+```
+
+Binary content is stored internally as a base64 envelope `{"_binary": true, "_mime": "...", "_data": "..."}`. The `DocumentMeta.is_binary` field is `True` and `mime_type` is populated. When you call `store.get_doc(id)`, the raw bytes are returned in `doc.binary_content`.
+
+### Recursive nesting
+
+Every `DocVault` and every `Store` is a `_VaultNode` — they share the same document CRUD interface. A store can contain sub-stores:
+
+```python
+parent_store = await vault.create_store(StoreCreateInput(name="platform"))
+
+sub_store = await parent_store.create_store(
+    StoreCreateInput(name="monitoring")
+)
+await sub_store.create_doc(CreateDocInput(content={"alerts": True}, creator="ops"))
+```
+
+Sub-stores live at `<vault_path>/stores/platform/stores/monitoring/` in the git repo and participate in the same git history as their parent.
 
 ---
 
@@ -493,9 +555,9 @@ docvault serve --host 0.0.0.0 --port 9000
 ### `docvault docs`
 
 ```bash
-docvault docs list [--template NAME] [--creator NAME] [--keywords KW1,KW2]
+docvault docs list [--creator NAME] [--keywords KW1,KW2]
 docvault docs get <DOC_ID>
-docvault docs create --creator alice --file content.json [--template NAME] [--summary TEXT] [--keywords KW1,KW2]
+docvault docs create --creator alice --file content.json [--summary TEXT] [--keywords KW1,KW2]
 docvault docs create --creator alice --file -           # read JSON from stdin
 docvault docs update <DOC_ID> --file updated.json [--summary TEXT] [--keywords KW]
 docvault docs delete <DOC_ID> [--force]
@@ -507,22 +569,32 @@ docvault docs summarize-all [--overwrite]
 
 ---
 
-### `docvault templates`
+### `docvault stores`
 
 ```bash
-docvault templates list
-docvault templates get <TEMPLATE_ID>
-docvault templates create <NAME> --file schema.json [--description TEXT]
-docvault templates create <NAME> --path ./folder    [--description TEXT]
-docvault templates create <NAME> --path ./file.json [--description TEXT]
-docvault templates delete <TEMPLATE_ID> [--force]
+docvault stores list
+docvault stores get <STORE_NAME>
+docvault stores create <NAME> [--file schema.json] [--path ./folder] [--description TEXT] [--locked]
+docvault stores delete <STORE_NAME> [--force]
+docvault stores validate <STORE_NAME>
+docvault stores docs list <STORE_NAME> [--keywords KW1,KW2]
+docvault stores docs deploy <STORE_NAME> --file specs.json
 ```
 
 `--file schema.json` — JSON file mapping slot paths to `DocSlot` objects (explicit structure).
 
-`--path` — folder or single file to ingest as slots. Every file in the folder becomes a document slot; a single file creates one flat slot named after the file stem. `create` is an upsert: if a template with the same name already exists, it is updated if the content changed, or left unchanged if it has not.
+`--path` — folder or single file to ingest as slots. Every file in the folder becomes a document slot; a single file creates one flat slot named after the file stem. `create` is an upsert: if a store with the same name already exists, it is updated if the content changed, or left unchanged if it has not.
 
-`<TEMPLATE_ID>` for `get` and `delete` is the full content-addressable ID returned by `create` (format: `name:md5:md5`). Use `templates list` to see all current IDs.
+`<STORE_NAME>` for `get`, `delete`, `validate`, and `docs` subcommands is the store name (not the content-addressable ID). Use `stores list` to see all current stores.
+
+`specs.json` for `docs deploy` is a JSON array of `DeployDocSpec` objects:
+
+```json
+[
+  { "path": "config/app",      "content": { "host": "api.example.com", "port": 8080 }, "creator": "ci-bot" },
+  { "path": "config/database", "content": { "host": "db.internal" },                   "creator": "ci-bot" }
+]
+```
 
 ---
 
@@ -532,16 +604,6 @@ docvault templates delete <TEMPLATE_ID> [--force]
 docvault vault info
 docvault vault versions
 docvault vault bump [major|minor|patch]     # default: patch
-docvault vault deploy --template NAME --file specs.json
-```
-
-`specs.json` is a JSON array of `DeployDocSpec` objects:
-
-```json
-[
-  { "path": "config/app",      "content": { "host": "api.example.com", "port": 8080 }, "creator": "ci-bot" },
-  { "path": "config/database", "content": { "host": "db.internal" },                   "creator": "ci-bot" }
-]
 ```
 
 ---
@@ -603,7 +665,31 @@ http://localhost:8000/docs
 
 ReDoc is at `/redoc`. The raw OpenAPI spec is at `/openapi.json`.
 
-To export the spec without a running server:
+### Key routes
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| `GET` | `/api/v1/health` | Health check |
+| `GET` | `/api/v1/vault` | Vault metadata |
+| `POST` | `/api/v1/docs` | Create a root document |
+| `GET` | `/api/v1/docs` | List root documents |
+| `GET` | `/api/v1/docs/{id}` | Get a document |
+| `PUT` | `/api/v1/docs/{id}` | Update a document |
+| `DELETE` | `/api/v1/docs/{id}` | Delete a document |
+| `GET` | `/api/v1/docs/{id}/history` | Document history |
+| `GET` | `/api/v1/docs/{id}/at/{ref}` | Document at git ref |
+| `POST` | `/api/v1/stores` | Create a store |
+| `GET` | `/api/v1/stores` | List stores |
+| `GET` | `/api/v1/stores/{name}` | Get a store |
+| `DELETE` | `/api/v1/stores/{name}` | Delete a store |
+| `GET` | `/api/v1/stores/{name}/validate` | Validate store satisfaction |
+| `GET` | `/api/v1/stores/{name}/export` | Export store as zip |
+| `POST` | `/api/v1/stores/{name}/deploy` | Batch deploy documents to a store |
+| `GET` | `/api/v1/stores/{name}/docs` | List store documents |
+| `POST` | `/api/v1/stores/{name}/docs` | Create a store document |
+| `GET` | `/api/v1/stores/{name}/docs/{id}` | Get a store document |
+
+To export the OpenAPI spec without a running server:
 
 ```bash
 task openapi           # writes docs/openapi.json
@@ -654,7 +740,7 @@ The test suite uses `pytest-asyncio` in `auto` mode. All async test functions ru
 
 ```
 src/docvault/
-├── __init__.py          # public API: DocVault, VaultConfig, load_config
+├── __init__.py          # public API: DocVaultShim, VaultConfig, load_config
 ├── config.py            # VaultConfig, load_config, AuthMode
 ├── exceptions.py        # DocVaultError hierarchy
 ├── api/
@@ -663,14 +749,14 @@ src/docvault/
 │   ├── auth.py          # build_auth_dep
 │   ├── router.py        # create_router (all HTTP endpoints)
 │   └── shim.py          # DocVaultShim (host-app integration)
-└── core/
-    ├── document.py      # Document, DocumentMeta, CreateDocInput, UpdateDocInput
-    ├── vault_meta.py    # VaultMeta, VaultVersion
-    ├── git_backend.py   # GitBackend (asyncio.to_thread wrapper)
-    ├── store.py         # DocVault (main async store)
-    ├── summarizer.py    # DocumentSummarizer (Anthropic API)
-    ├── tools/
-    │   └── deploy.py    # deploy_template (zip export → local filesystem)
-    └── template.py      # Template, DocSlot, TemplateCreateInput,
-                         # DeployVaultInput, create_id, create_id_from_structure
+├── core/
+│   ├── document.py      # Document, DocumentMeta, CreateDocInput, UpdateDocInput
+│   ├── vault_meta.py    # VaultMeta, VaultVersion
+│   ├── git_backend.py   # GitBackend (asyncio.to_thread wrapper)
+│   ├── vault.py         # _VaultNode base, Store, DocVault
+│   ├── store.py         # Store models: StoreCreateInput, StoreMeta, DocSlot,
+│   │                    #   DeployDocSpec, DeployStoreInput
+│   └── summarizer.py    # DocumentSummarizer (Anthropic API)
+└── tools/
+    └── deploy.py        # deploy_store (zip export → local filesystem)
 ```

@@ -1,12 +1,12 @@
 """
-Template versioning example.
+Store versioning example.
 
-Shows how template versions work when folder content changes:
+Shows how store versions work when folder content changes:
 - First creation → version 1
 - Content changes → version increments (2, 3, ...)
 - Content reverts to a known snapshot → version reverts to the original number
 - Same content as current → no-op, same ID returned
-- Two templates with same name + same content are treated as copies
+- Two stores with same name + same content are treated as copies
 """
 
 from __future__ import annotations
@@ -16,101 +16,102 @@ import tempfile
 from pathlib import Path
 
 from docvault.config import VaultConfig
-from docvault.core.store import DocVault
-from docvault.core.template import TemplateCreateInput
+from docvault.core.vault import DocVault
+from docvault.core.store import StoreCreateInput
 
 
 async def main() -> None:
     with tempfile.TemporaryDirectory() as d:
         cfg = VaultConfig(vault_path=Path(d) / "vault")
-        store = DocVault(cfg)
-        await store.init()
+        vault = DocVault(cfg)
+        await vault.init()
 
-        # Set up a folder that will act as the template source
-        src = Path(d) / "config-template"
+        # Set up a folder that will act as the store source
+        src = Path(d) / "config-store"
         src.mkdir()
         (src / "app.json").write_text('{"host": "localhost", "port": 8080}', "utf-8")
         (src / "database.json").write_text('{"url": "postgres://db/app"}', "utf-8")
 
         # ── Creation (version 1) ──────────────────────────────────────────────
-        ref = await store.create_template(
-            TemplateCreateInput(name="platform-config", path=src)
+        store_obj = await vault.create_store(
+            StoreCreateInput(name="platform-config", path=src)
         )
-        tpl = await store.get_template(ref.id)
-        print(f"[create]  version={tpl.version}  id={ref.id}")
+        meta = await store_obj.get_meta()
+        print(f"[create]  version={meta.version}  id={meta.id}")
 
         # ── No-op: same folder, same content ─────────────────────────────────
-        ref2 = await store.create_template(
-            TemplateCreateInput(name="platform-config", path=src)
+        store_obj2 = await vault.create_store(
+            StoreCreateInput(name="platform-config", path=src)
         )
-        assert ref2.id == ref.id, "Same content must return same ID"
-        print(f"[no-op]   version={tpl.version}  id={ref2.id}  (unchanged)")
+        meta2 = await store_obj2.get_meta()
+        assert meta2.id == meta.id, "Same content must return same ID"
+        print(f"[no-op]   version={meta2.version}  id={meta2.id}  (unchanged)")
 
         # ── Content change → version 2 ────────────────────────────────────────
         (src / "app.json").write_text(
             '{"host": "api.prod.example.com", "port": 443}', "utf-8"
         )
-        ref_v2 = await store.create_template(
-            TemplateCreateInput(name="platform-config", path=src)
+        store_v2 = await vault.create_store(
+            StoreCreateInput(name="platform-config", path=src)
         )
-        tpl_v2 = await store.get_template(ref_v2.id)
-        print(f"[update]  version={tpl_v2.version}  id={ref_v2.id}")
-        assert tpl_v2.version == 2
+        meta_v2 = await store_v2.get_meta()
+        print(f"[update]  version={meta_v2.version}  id={meta_v2.id}")
+        assert meta_v2.version == 2
 
         # ── Another change → version 3 ────────────────────────────────────────
         (src / "database.json").write_text(
             '{"url": "postgres://prod-db/app", "pool": 20}', "utf-8"
         )
-        ref_v3 = await store.create_template(
-            TemplateCreateInput(name="platform-config", path=src)
+        store_v3 = await vault.create_store(
+            StoreCreateInput(name="platform-config", path=src)
         )
-        tpl_v3 = await store.get_template(ref_v3.id)
-        print(f"[update]  version={tpl_v3.version}  id={ref_v3.id}")
-        assert tpl_v3.version == 3
+        meta_v3 = await store_v3.get_meta()
+        print(f"[update]  version={meta_v3.version}  id={meta_v3.id}")
+        assert meta_v3.version == 3
 
         # ── Revert to v1 content → version goes back to 1 ────────────────────
         (src / "app.json").write_text('{"host": "localhost", "port": 8080}', "utf-8")
         (src / "database.json").write_text('{"url": "postgres://db/app"}', "utf-8")
-        ref_reverted = await store.create_template(
-            TemplateCreateInput(name="platform-config", path=src)
+        store_reverted = await vault.create_store(
+            StoreCreateInput(name="platform-config", path=src)
         )
-        tpl_reverted = await store.get_template(ref_reverted.id)
-        print(f"[revert]  version={tpl_reverted.version}  id={ref_reverted.id}  (back to v1)")
-        assert tpl_reverted.version == 1
-        assert ref_reverted.id == ref.id
+        meta_reverted = await store_reverted.get_meta()
+        print(f"[revert]  version={meta_reverted.version}  id={meta_reverted.id}  (back to v1)")
+        assert meta_reverted.version == 1
+        assert meta_reverted.id == meta.id
 
-        # ── Copies: different template name, same structure ───────────────────
-        ref_copy = await store.create_template(
-            TemplateCreateInput(
+        # ── Copies: different store name, same structure ───────────────────────
+        store_copy = await vault.create_store(
+            StoreCreateInput(
                 name="platform-config-staging",
-                structure=dict(tpl_reverted.structure),
+                structure=dict(meta_reverted.structure),
             )
         )
-        tpl_copy = await store.get_template(ref_copy.id)
+        meta_copy = await store_copy.get_meta()
         print(
-            f"\n[copy]    name={tpl_copy.name}  version={tpl_copy.version}"
+            f"\n[copy]    name={meta_copy.name}  version={meta_copy.version}"
         )
-        # Same structure deployed again under a different name is an independent template
-        assert tpl_copy.name == "platform-config-staging"
-        assert tpl_copy.version == 1
+        assert meta_copy.name == "platform-config-staging"
+        assert meta_copy.version == 1
 
         # Redeploy same copy structure → no-op
-        ref_copy2 = await store.create_template(
-            TemplateCreateInput(
+        store_copy2 = await vault.create_store(
+            StoreCreateInput(
                 name="platform-config-staging",
-                structure=dict(tpl_reverted.structure),
+                structure=dict(meta_reverted.structure),
             )
         )
-        assert ref_copy2.id == ref_copy.id
-        print(f"[no-op]   name={tpl_copy.name}  id={ref_copy2.id}  (unchanged)")
+        meta_copy2 = await store_copy2.get_meta()
+        assert meta_copy2.id == meta_copy.id
+        print(f"[no-op]   name={meta_copy.name}  id={meta_copy2.id}  (unchanged)")
 
         # ── Summary ───────────────────────────────────────────────────────────
-        templates = await store.list_templates()
-        print(f"\nVault contains {len(templates)} template(s):")
-        for t in templates:
+        stores = await vault.list_stores()
+        print(f"\nVault contains {len(stores)} store(s):")
+        for s in stores:
             print(
-                f"  {t.name:<28} version={t.version}"
-                f"  history_entries={len(t.version_history)}"
+                f"  {s.name:<28} version={s.version}"
+                f"  history_entries={len(s.version_history)}"
             )
 
 

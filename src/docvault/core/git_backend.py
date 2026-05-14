@@ -1,9 +1,12 @@
+# Future imports (must occur at the beginning of the file):
 from __future__ import annotations
 
+# Standard library imports:
 import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 
+# Third party imports:
 import git
 
 from .document import CommitInfo
