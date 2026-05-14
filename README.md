@@ -34,6 +34,7 @@ Documents can be plain JSON, text, or binary files. **Stores** define named fold
 - [LLM summarization](#llm-summarization)
 - [API reference](#api-reference)
 - [Development](#development)
+- [Full manual](https://github.com/oliben67/docvault/blob/main/MANUAL.md)
 
 ---
 
