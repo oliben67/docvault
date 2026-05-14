@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "py-docvault"
-version = "0.2.0"
+version = "0.2.1"
 description = "Git-backed document store with REST API, CLI, and FastAPI embedding — every write is a commit, every document has full revision history."
 readme = "README.md"
 license = { file = "LICENSE" }
