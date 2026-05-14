@@ -1059,7 +1059,7 @@ async def lifespan(app: FastAPI):
         yield
 ```
 
-See [examples/shim-integration/main.py](examples/shim-integration/main.py) for a complete working example.
+See [examples/shim-integration/main.py](https://github.com/oliben67/docvault/blob/main/examples/shim-integration/main.py) for a complete working example.
 
 ---
 

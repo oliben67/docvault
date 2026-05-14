@@ -655,7 +655,7 @@ Summarization is skipped if the document already has a `summary` unless `--overw
 
 ## API reference
 
-Full endpoint reference: **[docs/api.md](docs/api.md)**
+Full endpoint reference: **[MANUAL.md](https://github.com/oliben67/docvault/blob/main/MANUAL.md)**
 
 When the server is running, the interactive Swagger UI is at:
 
@@ -702,7 +702,7 @@ task openapi           # writes docs/openapi.json
 ### Setup
 
 ```bash
-git clone https://github.com/your-org/docvault
+git clone https://github.com/oliben67/docvault
 cd docvault
 uv sync --all-extras
 ```
